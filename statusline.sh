@@ -101,15 +101,16 @@ pct_remain=$(( 100 - pct_used ))
 used_comma=$(format_commas $current)
 remain_comma=$(format_commas $(( size - current )))
 
-# Check thinking status (respects CLAUDE_CONFIG_DIR)
+# Check thinking status (live session state from stdin — reflects Option+T toggle)
 thinking_on=false
-settings_path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
-if [ -f "$settings_path" ]; then
-    thinking_val=$(jq -r '.alwaysThinkingEnabled // false' "$settings_path" 2>/dev/null)
-    [ "$thinking_val" = "true" ] && thinking_on=true
-fi
+thinking_val=$(echo "$input" | jq -r '.thinking.enabled // false')
+[ "$thinking_val" = "true" ] && thinking_on=true
 
-# ===== LINE 1: [profile] Model | tokens | % used | % remain | thinking =====
+# Reasoning effort level (live session state from stdin — reflects /effort changes).
+# Absent when the current model does not support the effort parameter.
+effort_level=$(echo "$input" | jq -r '.effort.level // empty')
+
+# ===== LINE 1: [profile] Model | tokens | % used | % remain | thinking | effort =====
 # Show active profile name when using CLAUDE_CONFIG_DIR (e.g. "work", "personal")
 profile_label=""
 if [ -n "$CLAUDE_CONFIG_DIR" ]; then
@@ -131,6 +132,9 @@ if $thinking_on; then
     line1+="${orange}On${reset}"
 else
     line1+="${dim}Off${reset}"
+fi
+if [ -n "$effort_level" ]; then
+    line1+=" ${dim}|${reset} effort: ${cyan}${effort_level}${reset}"
 fi
 
 # ===== Cross-platform OAuth token resolution with auto-refresh =====

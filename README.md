@@ -20,7 +20,7 @@ Read https://raw.githubusercontent.com/FlorianRiquelme/claudefuel/main/INSTALL.m
 
 ## What you get
 
-- **Line 1:** model · tokens used / total · % used bar · % remaining bar · thinking on/off
+- **Line 1:** model · tokens used / total · % used bar · % remaining bar · thinking on/off · effort level (when the model supports it)
 - **Line 2:** session / weekly / extra usage progress bars
 - **Line 3:** session reset time · weekly reset · extra reset
 - Cross-platform: macOS Keychain, Linux credentials file / GNOME Keyring
