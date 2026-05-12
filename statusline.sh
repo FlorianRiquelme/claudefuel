@@ -1,5 +1,5 @@
 #!/bin/bash
-# claudefuel: v0.1.1
+# claudefuel: v0.2.0
 # Claude Code Status Line — Multi-Account Aware
 #
 # Line 1: Model | tokens used/total | % used <fullused> | % remain <fullremain> | thinking: on/off
@@ -135,6 +135,60 @@ else
 fi
 if [ -n "$effort_level" ]; then
     line1+=" ${dim}|${reset} effort: ${cyan}${effort_level}${reset}"
+fi
+
+# Drift detection — when the cached upstream version differs from the
+# installed version, append a single '↗ /claudefuel.update' segment to
+# line 1. No count, no growth in bar height, no segment when equal.
+# Cache lives at $CLAUDE_CONFIG_DIR/cache/claudefuel-version.json
+# (or ~/.claude/cache/), TTL 6h. When stale, attempt one short-timeout
+# fetch of raw statusline.sh from main; on failure keep the stale value
+# (offline tolerance). Set CLAUDEFUEL_OFFLINE=1 to skip the fetch.
+claudefuel_drift_segment() {
+    local cache_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cache"
+    local cache_file="$cache_dir/claudefuel-version.json"
+    local ttl_seconds=$((6 * 60 * 60))
+
+    local installed_version
+    installed_version=$(head -20 "${BASH_SOURCE[0]:-$0}" \
+        | grep -E '^# claudefuel:' | head -n1 \
+        | sed -E 's/^# claudefuel: v//')
+    [ -z "$installed_version" ] && return 0
+
+    local upstream_version="" should_fetch=false
+    if [ -f "$cache_file" ]; then
+        upstream_version=$(jq -r '.upstream_version // empty' "$cache_file" 2>/dev/null)
+        local cache_mtime now cache_age
+        cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
+        now=$(date +%s)
+        cache_age=$(( now - ${cache_mtime:-0} ))
+        [ "$cache_age" -ge "$ttl_seconds" ] && should_fetch=true
+    else
+        should_fetch=true
+    fi
+
+    if $should_fetch && [ -z "$CLAUDEFUEL_OFFLINE" ]; then
+        local fresh
+        fresh=$(curl -fsSL --connect-timeout 2 --max-time 3 \
+            "https://raw.githubusercontent.com/FlorianRiquelme/claudefuel/main/statusline.sh" 2>/dev/null \
+            | head -20 | grep -E '^# claudefuel:' | head -n1 \
+            | sed -E 's/^# claudefuel: v//')
+        if [ -n "$fresh" ]; then
+            upstream_version="$fresh"
+            mkdir -p "$cache_dir"
+            printf '{"upstream_version":"%s"}\n' "$fresh" > "$cache_file"
+        fi
+    fi
+
+    [ -z "$upstream_version" ] && return 0
+    [ "$upstream_version" = "$installed_version" ] && return 0
+
+    printf "↗ /claudefuel.update"
+}
+
+drift_segment=$(claudefuel_drift_segment)
+if [ -n "$drift_segment" ]; then
+    line1+=" ${dim}|${reset} ${yellow}${drift_segment}${reset}"
 fi
 
 # ===== Cross-platform OAuth token resolution with auto-refresh =====
