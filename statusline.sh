@@ -1,5 +1,5 @@
 #!/bin/bash
-# claudefuel: v0.1.0
+# claudefuel: v0.1.1
 # Claude Code Status Line — Multi-Account Aware
 #
 # Line 1: Model | tokens used/total | % used <fullused> | % remain <fullremain> | thinking: on/off

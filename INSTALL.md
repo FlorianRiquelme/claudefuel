@@ -1,6 +1,6 @@
 # claudefuel — install / upgrade spec
 
-Version: `0.1.0`
+Version: `0.1.1`
 Canonical URL: `https://raw.githubusercontent.com/FlorianRiquelme/claudefuel/main/INSTALL.md`
 Source: `https://github.com/FlorianRiquelme/claudefuel`
 
