@@ -3,7 +3,7 @@ description: Edit claudefuel's user config conversationally (placeholder in v0.2
 ---
 # claudefuel-skill: v0.2.0
 
-> **Scope in v0.2.0:** this release ships the `/claudefuel.configure` slash-command name as part of the stability contract, but the bar does not yet read `~/.claude/claudefuel.json`. The skill will gain real settings to manage in a follow-up release. See `docs/design/upgrade-experience.md` and `docs/adr/0003-stay-bash-conversational-customization.md` for the intended scope (minor tweaks — color thresholds, segment ordering, segment show/hide, theme presets).
+> **Scope in v0.2.0:** this release ships the `/claudefuel.configure` slash-command name as part of the stability contract, but the bar does not yet read `~/.claude/claudefuel.json`. The skill will gain real settings to manage in a follow-up release. Intended scope is minor tweaks only — color thresholds, segment ordering, segment show/hide, theme presets.
 
 If the user invokes this skill today, do this:
 

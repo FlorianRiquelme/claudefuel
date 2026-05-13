@@ -22,7 +22,7 @@ If `$installed` is empty, report "claudefuel is not installed — run the instal
 
 ## Step 2 — Resolve the latest release
 
-Resolve the latest release tag via the GitHub Releases API, then fetch the **tagged** `INSTALL.md` (not `main`). Trust pins to the tag — see `docs/adr/0002-upgrade-trust-boundary.md`.
+Resolve the latest release tag via the GitHub Releases API, then fetch the **tagged** `INSTALL.md` (not `main`). Trust pins to the tag, not to `main` — a malicious push to `main` cannot propagate to existing users until a tag also moves.
 
 ```bash
 latest_tag=$(curl -fsSL "https://api.github.com/repos/FlorianRiquelme/claudefuel/releases/latest" \
@@ -65,7 +65,7 @@ Branch on `$state`:
 
 - `equal` → report `v${spec} — current.` and stop.
 - `spec-newer` → continue to Step 4.
-- `installed-newer` → refuse: print `installed v${installed} is newer than spec v${spec} — you appear to have a customized or pre-release build; no action taken.` and stop. Do **not** offer a `--force` flag (design decision — see `docs/design/upgrade-experience.md`).
+- `installed-newer` → refuse: print `installed v${installed} is newer than spec v${spec} — you appear to have a customized or pre-release build; no action taken.` and stop. Do **not** offer a `--force` flag — silent downgrade would be dangerous, and the maintainer's workaround for dev builds is to edit the local version header to match spec.
 
 ## Step 4 — Render the diff for trust review
 
@@ -90,7 +90,7 @@ On explicit user confirmation, fetch and execute the tagged `INSTALL.md` as a Pr
 
 ## Notes
 
-- The bar polls `main` for drift detection (cheap, no execution); this skill pins to a tag (trust boundary). See `docs/adr/0002-upgrade-trust-boundary.md`.
+- The bar polls `main` for drift detection (cheap, no execution); this skill pins to a tag (trust boundary). A poisoned `main` at worst yields inaccurate drift signaling — it never executes.
 - Pre-release tags (`-rc1` etc.) are not supported in v1.
 - The user's `~/.claude/claudefuel.json` is never touched by this skill or by `INSTALL.md`.
 - The `compare_versions` snippet in Step 3 is the canonical home of the version-comparison algorithm. The test fixture at `tests/fixtures/compare_versions.sh` mirrors it verbatim — if you change one, change the other.
