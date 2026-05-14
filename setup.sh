@@ -90,7 +90,8 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 if [ ! -d "$CLAUDE_HOME" ]; then
-    err "~/.claude/ not found. Run 'claude' at least once first to initialize."
+    # shellcheck disable=SC2088  # literal tilde in user-facing message
+    err '~/.claude/ not found. Run `claude` at least once first to initialize.'
     exit 1
 fi
 
