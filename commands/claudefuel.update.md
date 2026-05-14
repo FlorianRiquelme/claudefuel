@@ -1,7 +1,7 @@
 ---
 description: Reconcile claudefuel against the latest released spec
 ---
-# claudefuel-skill: v0.3.0
+# claudefuel-skill: v0.4.0
 
 This skill upgrades the user's claudefuel install to match the latest released `INSTALL.md`. It is thin orchestration — the actual install logic lives in the upstream Promptfile.
 
