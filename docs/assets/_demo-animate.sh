@@ -18,11 +18,23 @@ printf '\033[H\033[J'
 unset CLAUDE_CONFIG_DIR
 mkdir -p /tmp/claude
 
+# Compute reset timestamps relative to render time so the cap-ETA tracer
+# in statusline.sh has a future window to project against. Placing the
+# 5h reset ~4h ahead means each frame is roughly "1h into" the window,
+# so burn rates above reset-pace trip the tracer and produce a visible
+# `~cap HH:MM-HH:MM` segment on the 5h reset cell (Line 3). Pinning the
+# reset_at to a fixed past date — as earlier versions of this script did —
+# leaves the segment permanently dormant.
+fh_reset=$(date -u -v+4H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
+  || date -u -d "+4 hours" +"%Y-%m-%dT%H:%M:%SZ")
+sd_reset=$(date -u -v+3d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
+  || date -u -d "+3 days" +"%Y-%m-%dT%H:%M:%SZ")
+
 emit_cache() {
   local fh="$1" sd="$2" credits="$3"
   local extra_pct=$(( credits * 100 / 17000 ))
   cat > /tmp/claude/statusline-usage-cache.json <<EOF
-{"five_hour":{"utilization":${fh},"resets_at":"2026-05-13T22:00:00Z"},"seven_day":{"utilization":${sd},"resets_at":"2026-05-16T22:00:00Z"},"extra_usage":{"is_enabled":true,"utilization":${extra_pct},"used_credits":${credits},"monthly_limit":17000}}
+{"five_hour":{"utilization":${fh},"resets_at":"${fh_reset}"},"seven_day":{"utilization":${sd},"resets_at":"${sd_reset}"},"extra_usage":{"is_enabled":true,"utilization":${extra_pct},"used_credits":${credits},"monthly_limit":17000}}
 EOF
 }
 
@@ -38,6 +50,9 @@ emit_bar() {
 # Each row: input_tokens | five_hour_pct | seven_day_pct | extra_used_credits
 # Six frames spanning the four color states: green (<50), orange (50-69),
 # yellow (70-89), red (90+). Bottom-line values progress in lockstep.
+# The first frame stays under the cap-ETA noise gate (pct_used < 10), so
+# the 5h reset cell shows the dormant baseline. From frame 2 onward the
+# tracer kicks in and the `~cap` range tightens as burn accelerates.
 frames=(
   "8000    6   18   200"
   "55000   28  35   900"
