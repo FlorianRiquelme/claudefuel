@@ -10,7 +10,7 @@
 #   burn rate   — pct_used / time_elapsed_in_window (snapshot-derived)
 #   reset-pace  — 100% / window_length
 #   cap-ETA     — predicted wall-clock 100% time, rendered as a range
-#                 next to `resets <time>` on Line 3, only when burn rate
+#                 next to `↻ <time>` on Line 3, only when burn rate
 #                 exceeds reset-pace AND pct_used >= 10%.
 
 SAMPLE_STDIN='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"},"session_id":"t"}'
@@ -88,14 +88,14 @@ run_bar() {
 
 @test "reset text remains when cap-ETA is appended (never replaces)" {
   # Burning hot — same as tracer scenario. The cap-ETA annotation must
-  # sit alongside `resets <time>`, never replace it. The reset is the
+  # sit alongside `↻ <time>`, never replace it. The reset is the
   # authoritative wall-clock anchor; cap-ETA is the rough overlay.
   seed_usage_cache 50 7200 10800
 
   output=$(run_bar)
   line3=$(printf '%s' "$output" | sed -n '3p')
 
-  [[ "$line3" == *"resets"* ]]
+  [[ "$line3" == *"↻"* ]]
   [[ "$line3" == *"~cap"* ]]
 }
 

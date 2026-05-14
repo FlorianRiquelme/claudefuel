@@ -159,7 +159,7 @@ After reconcile, run all of these and report each pass/fail:
 After Verify passes, explain to the user in chat the user-visible bar behaviors — particularly the ones that are dormant until specific conditions occur, since they will not be visible on first render. This section is the canonical discoverability surface; the `/claudefuel.update` skill defers to it on upgrade so the prose lives in one place across install and upgrade.
 
 - **Drift signal (`↗ /claudefuel.update`).** Appears on Line 1 only when an upstream release is available. Invoking it routes to the upgrade skill.
-- **Cap-ETA (`~cap HH:MM-HH:MM`).** Appears on Line 3 next to the 5-hour `resets <time>` cell only when the user is on track to hit the 5-hour cap before reset. A rough estimate (tilde + range — never a precise time) derived from average burn rate over the current window. Dormant when healthy; the cell shows only `resets <time>` until burn rate exceeds reset-pace.
+- **Cap-ETA (`~cap HH:MM-HH:MM`).** Appears on Line 3 next to the 5-hour `↻ <time>` reset cell only when the user is on track to hit the 5-hour cap before reset. A rough estimate (tilde + range — never a precise time) derived from average burn rate over the current window. Dormant when healthy; the cell shows only `↻ <time>` until burn rate exceeds reset-pace.
 
 ## Upgrade
 
