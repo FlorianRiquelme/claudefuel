@@ -2,9 +2,9 @@
 # claudefuel: v0.3.0
 # Claude Code Status Line — Multi-Account Aware
 #
-# Line 1: Model | tokens used/total | % used <fullused> | % remain <fullremain> | thinking: on/off
-# Line 2: current: <progressbar> % | weekly: <progressbar> % | extra: <progressbar> $used/$limit
-# Line 3: resets <time> | resets <datetime> | resets <date>
+# Line 1: [profile] Model | ctx <bar> <used>/<total> | thinking: on/off | effort: <level> | ↗ /claudefuel.update
+# Line 2: 5h: <bar> % | 7d: <bar> % | extra: <bar> $used/$limit
+# Line 3: ↻ <time> · ~cap <range> | ↻ <datetime> | ↻ <date>
 #
 # Supports CLAUDE_CONFIG_DIR for per-account usage display.
 # When CLAUDE_CONFIG_DIR is set, keychain lookups and cache files are isolated per account.
@@ -47,11 +47,6 @@ format_tokens() {
     else
         printf "%d" "$num"
     fi
-}
-
-# Format number with commas (e.g., 134,938)
-format_commas() {
-    printf "%'d" "$1"
 }
 
 # Build a colored progress bar
@@ -101,10 +96,6 @@ if [ "$size" -gt 0 ]; then
 else
     pct_used=0
 fi
-pct_remain=$(( 100 - pct_used ))
-
-used_comma=$(format_commas $current)
-remain_comma=$(format_commas $(( size - current )))
 
 # Check thinking status (live session state from stdin — reflects Option+T toggle)
 thinking_on=false
@@ -115,7 +106,7 @@ thinking_val=$(echo "$input" | jq -r '.thinking.enabled // false')
 # Absent when the current model does not support the effort parameter.
 effort_level=$(echo "$input" | jq -r '.effort.level // empty')
 
-# ===== LINE 1: [profile] Model | tokens | % used | % remain | thinking | effort =====
+# ===== LINE 1: [profile] Model | ctx <bar> <used>/<total> | thinking | effort =====
 # Show active profile name when using CLAUDE_CONFIG_DIR (e.g. "work", "personal")
 profile_label=""
 if [ -n "$CLAUDE_CONFIG_DIR" ]; then
@@ -123,14 +114,11 @@ if [ -n "$CLAUDE_CONFIG_DIR" ]; then
     profile_label="${yellow}[${profile_name}]${reset} "
 fi
 
+ctx_bar=$(build_bar "$pct_used" 10)
 line1=""
 line1+="${profile_label}${blue}${model_name}${reset}"
 line1+=" ${dim}|${reset} "
-line1+="${orange}${used_tokens} / ${total_tokens}${reset}"
-line1+=" ${dim}|${reset} "
-line1+="${green}${pct_used}% used ${orange}${used_comma}${reset}"
-line1+=" ${dim}|${reset} "
-line1+="${cyan}${pct_remain}% remain ${blue}${remain_comma}${reset}"
+line1+="${white}ctx${reset} ${ctx_bar} ${orange}${used_tokens}/${total_tokens}${reset}"
 line1+=" ${dim}|${reset} "
 line1+="thinking: "
 if $thinking_on; then
@@ -557,22 +545,22 @@ sep=" ${dim}|${reset} "
 
 if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     bar_width=10
-    col1w=23
-    col2w=22
+    col1w=19
+    col2w=19
 
-    # ---- 5-hour (current) ----
+    # ---- 5-hour ----
     five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
     five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
     five_hour_reset=$(format_reset_time "$five_hour_reset_iso" "time")
     five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
 
-    # Calculate visible length: "current: " + bar + " " + "XX%"
-    col1_bar_vis_len=$(( 9 + bar_width + 1 + ${#five_hour_pct} + 1 ))
-    col1_bar_raw="${white}current:${reset} ${five_hour_bar} ${cyan}${five_hour_pct}%${reset}"
+    # Calculate visible length: "5h: " + bar + " " + "XX%"
+    col1_bar_vis_len=$(( 4 + bar_width + 1 + ${#five_hour_pct} + 1 ))
+    col1_bar_raw="${white}5h:${reset} ${five_hour_bar} ${cyan}${five_hour_pct}%${reset}"
     # col1_bar padding deferred — see col1w_actual computation below (cap-ETA may widen col1).
 
-    col1_reset_plain="resets ${five_hour_reset}"
-    col1_reset="${white}resets ${five_hour_reset}${reset}"
+    col1_reset_plain="↻ ${five_hour_reset}"
+    col1_reset="${white}↻ ${five_hour_reset}${reset}"
 
     # Cap-ETA: see ADR-0004. Append to the 5h reset cell when present.
     five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
@@ -588,18 +576,18 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     col1_bar=$(pad_column "$col1_bar_raw" "$col1_bar_vis_len" "$col1w_actual")
     col1_reset=$(pad_column "$col1_reset" "${#col1_reset_plain}" "$col1w_actual")
 
-    # ---- 7-day (weekly) ----
+    # ---- 7-day ----
     seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
     seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
     seven_day_reset=$(format_reset_time "$seven_day_reset_iso" "datetime")
     seven_day_bar=$(build_bar "$seven_day_pct" "$bar_width")
 
-    col2_bar_vis_len=$(( 8 + bar_width + 1 + ${#seven_day_pct} + 1 ))
-    col2_bar="${white}weekly:${reset} ${seven_day_bar} ${cyan}${seven_day_pct}%${reset}"
+    col2_bar_vis_len=$(( 4 + bar_width + 1 + ${#seven_day_pct} + 1 ))
+    col2_bar="${white}7d:${reset} ${seven_day_bar} ${cyan}${seven_day_pct}%${reset}"
     col2_bar=$(pad_column "$col2_bar" "$col2_bar_vis_len" "$col2w")
 
-    col2_reset_plain="resets ${seven_day_reset}"
-    col2_reset="${white}resets ${seven_day_reset}${reset}"
+    col2_reset_plain="↻ ${seven_day_reset}"
+    col2_reset="${white}↻ ${seven_day_reset}${reset}"
     col2_reset=$(pad_column "$col2_reset" "${#col2_reset_plain}" "$col2w")
 
     # ---- Extra usage ----
@@ -617,7 +605,7 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
                       date -d "$(date +%Y-%m-01) +1 month" +"%b %-d" 2>/dev/null)
 
         col3_bar="${white}extra:${reset} ${extra_bar} ${cyan}\$${extra_used}/\$${extra_limit}${reset}"
-        col3_reset="${white}resets ${extra_reset}${reset}"
+        col3_reset="${white}↻ ${extra_reset}${reset}"
     fi
 
     # Assemble line 2: bars row
