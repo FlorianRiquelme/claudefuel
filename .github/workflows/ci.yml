@@ -26,4 +26,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: bats-core/bats-action@3.0.0
+        with:
+          bats-version: 1.11.0
+          support-install: false
+          assert-install: false
+          detik-install: false
+          file-install: false
       - run: bats --print-output-on-failure tests/
