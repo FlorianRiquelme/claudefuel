@@ -36,3 +36,11 @@ SKILLS=(update doctor rollback uninstall configure)
     [[ "$output" == *"description:"* ]] || { echo "no description in claudefuel.${s}.md"; return 1; }
   done
 }
+
+@test "claudefuel.update.md references INSTALL.md's Post-install summary" {
+  # The upgrade skill defers to INSTALL.md's "Post-install summary" section
+  # rather than duplicating discoverability prose. If this reference is
+  # dropped, prose drift between install and upgrade becomes inevitable.
+  run grep -F "Post-install summary" "$COMMANDS_DIR/claudefuel.update.md"
+  [ "$status" -eq 0 ]
+}

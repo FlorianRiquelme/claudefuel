@@ -37,3 +37,19 @@ SKILLS=(update doctor rollback uninstall configure)
   run grep -E "(write|create|patch|modify).*claudefuel\.json" "$INSTALL_MD"
   [ "$status" -ne 0 ]
 }
+
+@test "INSTALL.md declares a Post-install summary section" {
+  # Canonical discoverability surface for dormant bar behaviors.
+  # /claudefuel.update defers to this section on upgrade; renaming it
+  # silently would break the cross-reference.
+  run grep -E "^## Post-install summary" "$INSTALL_MD"
+  [ "$status" -eq 0 ]
+}
+
+@test "INSTALL.md Post-install summary mentions cap-ETA" {
+  # The cap-ETA segment is dormant until burning hot — users will not
+  # see it on first render, so it must be surfaced in chat. This test
+  # guards against the discoverability prose being silently removed.
+  run grep -F "~cap" "$INSTALL_MD"
+  [ "$status" -eq 0 ]
+}
