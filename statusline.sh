@@ -341,9 +341,10 @@ get_oauth_token() {
     # 3. Linux credentials file
     local creds_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
     if [ -f "$creds_file" ]; then
+        local expires_at refresh
         token=$(jq -r '.claudeAiOauth.accessToken // empty' "$creds_file" 2>/dev/null)
-        local expires_at=$(jq -r '.claudeAiOauth.expiresAt // empty' "$creds_file" 2>/dev/null)
-        local refresh=$(jq -r '.claudeAiOauth.refreshToken // empty' "$creds_file" 2>/dev/null)
+        expires_at=$(jq -r '.claudeAiOauth.expiresAt // empty' "$creds_file" 2>/dev/null)
+        refresh=$(jq -r '.claudeAiOauth.refreshToken // empty' "$creds_file" 2>/dev/null)
 
         if [ -n "$token" ] && [ "$token" != "null" ]; then
             if is_token_expired "$expires_at"; then
@@ -365,9 +366,10 @@ get_oauth_token() {
         local blob
         blob=$(timeout 2 secret-tool lookup service "Claude Code-credentials" 2>/dev/null)
         if [ -n "$blob" ]; then
+            local expires_at refresh
             token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-            local expires_at=$(echo "$blob" | jq -r '.claudeAiOauth.expiresAt // empty' 2>/dev/null)
-            local refresh=$(echo "$blob" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null)
+            expires_at=$(echo "$blob" | jq -r '.claudeAiOauth.expiresAt // empty' 2>/dev/null)
+            refresh=$(echo "$blob" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null)
 
             if [ -n "$token" ] && [ "$token" != "null" ]; then
                 if is_token_expired "$expires_at"; then
