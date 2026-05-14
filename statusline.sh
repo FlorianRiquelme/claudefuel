@@ -12,7 +12,12 @@
 # Cross-platform: macOS (Keychain), Linux (credentials file, GNOME Keyring)
 # Dependencies: jq, curl
 
-set -f  # disable globbing
+set -f          # disable globbing
+set -o pipefail # `a | b || c` must reflect a's failure, not b's success.
+                # Several BSD-first / GNU-fallback date pipelines below
+                # rely on this: without pipefail, the trailing `tr`/`sed`
+                # masks the BSD failure on Linux and the fallback never
+                # runs, yielding empty time strings.
 
 input=$(cat)
 
