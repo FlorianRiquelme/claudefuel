@@ -69,7 +69,7 @@ Once installed, five slash commands are available in any Claude Code session:
 | `/claudefuel.doctor` | Non-destructive health check across the install — file presence, version header, `settings.json` wiring, dependencies. |
 | `/claudefuel.rollback` | Restore the most recent `*.bak-<timestamp>` written by a previous install. Shows the diff and asks before restoring. |
 | `/claudefuel.uninstall` | Remove the install bundle cleanly. Asks separately about backups and your `claudefuel.json`. |
-| `/claudefuel.configure` | **Placeholder in v0.2.0** — the name is reserved as part of the stability contract but config keys (color thresholds, segment ordering, theme presets) aren't wired into the bar yet. |
+| `/claudefuel.configure` | **Placeholder** — the name is reserved as part of the stability contract but config keys (color thresholds, segment ordering, theme presets) aren't wired into the bar yet. |
 
 ## Why a paste-line, not a plugin?
 
@@ -195,7 +195,7 @@ Check `echo $CLAUDE_CONFIG_DIR` in the terminal where the bar is wrong. claudefu
 The version-comparison guard is intentionally strict — local edits to the version header are treated as a pre-release build, not a candidate for forward upgrade. To resume tracking releases, edit the `# claudefuel: vX.Y.Z` header in your local copy to match the spec version, then re-run `/claudefuel.update`.
 
 **`/claudefuel.configure` doesn't actually configure anything.**
-Correct, in v0.2.0. The name is reserved as part of the stability contract but config keys aren't wired into the bar yet.
+Correct — the name is reserved as part of the stability contract but config keys aren't wired into the bar yet.
 
 ## Known limitations
 

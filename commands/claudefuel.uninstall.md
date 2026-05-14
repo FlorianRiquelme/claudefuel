@@ -1,7 +1,7 @@
 ---
 description: Remove claudefuel from this Claude Code install
 ---
-# claudefuel-skill: v0.2.0
+# claudefuel-skill: v0.3.0
 
 Remove every install-managed claudefuel artifact and restore the user's `settings.json` to a state where `.statusLine` no longer references this script. Use `$CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`.
 
