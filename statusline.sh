@@ -12,7 +12,12 @@
 # Cross-platform: macOS (Keychain), Linux (credentials file, GNOME Keyring)
 # Dependencies: jq, curl
 
-set -f  # disable globbing
+set -f          # disable globbing
+set -o pipefail # `a | b || c` must reflect a's failure, not b's success.
+                # Several BSD-first / GNU-fallback date pipelines below
+                # rely on this: without pipefail, the trailing `tr`/`sed`
+                # masks the BSD failure on Linux and the fallback never
+                # runs, yielding empty time strings.
 
 input=$(cat)
 
@@ -498,6 +503,40 @@ format_reset_time() {
     esac
 }
 
+# Cap-ETA segment — predicted wall-clock 100% time for the 5h window.
+# Stateless: computed from a single snapshot (pct + reset epoch), no
+# samples persisted across renders. Renders only when burn rate exceeds
+# reset-pace AND pct_used >= 10%. See ADR-0004.
+# Usage: claudefuel_cap_eta_segment <pct_used> <reset_at_epoch>
+# Echoes "~cap HH:MMxm-HH:MMxm" or empty.
+claudefuel_cap_eta_segment() {
+    local pct=$1
+    local reset_epoch=$2
+    local window_length=$((5 * 3600))
+
+    [ -z "$reset_epoch" ] && return 0
+    [ "$pct" -ge 10 ] 2>/dev/null || return 0
+
+    local now window_started elapsed
+    now=$(date +%s)
+    window_started=$(( reset_epoch - window_length ))
+    elapsed=$(( now - window_started ))
+    [ "$elapsed" -gt 0 ] || return 0
+
+    local cap_eta
+    cap_eta=$(awk "BEGIN {printf \"%d\", $now + (100 - $pct) * $elapsed / $pct}")
+    [ "$cap_eta" -lt "$reset_epoch" ] || return 0
+
+    local cap_low=$(( cap_eta - 900 )) cap_high=$(( cap_eta + 900 ))
+    local low_str high_str
+    low_str=$(date -j -r "$cap_low" +"%l:%M%p" 2>/dev/null | sed 's/^ //' | tr '[:upper:]' '[:lower:]' \
+        || date -d "@$cap_low" +"%l:%M%P" 2>/dev/null | sed 's/^ //')
+    high_str=$(date -j -r "$cap_high" +"%l:%M%p" 2>/dev/null | sed 's/^ //' | tr '[:upper:]' '[:lower:]' \
+        || date -d "@$cap_high" +"%l:%M%P" 2>/dev/null | sed 's/^ //')
+
+    printf "~cap %s-%s" "$low_str" "$high_str"
+}
+
 # Pad column to fixed width (ignoring ANSI codes)
 # Usage: pad_column <text_with_ansi> <visible_length> <column_width>
 pad_column() {
@@ -529,12 +568,25 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
 
     # Calculate visible length: "current: " + bar + " " + "XX%"
     col1_bar_vis_len=$(( 9 + bar_width + 1 + ${#five_hour_pct} + 1 ))
-    col1_bar="${white}current:${reset} ${five_hour_bar} ${cyan}${five_hour_pct}%${reset}"
-    col1_bar=$(pad_column "$col1_bar" "$col1_bar_vis_len" "$col1w")
+    col1_bar_raw="${white}current:${reset} ${five_hour_bar} ${cyan}${five_hour_pct}%${reset}"
+    # col1_bar padding deferred — see col1w_actual computation below (cap-ETA may widen col1).
 
     col1_reset_plain="resets ${five_hour_reset}"
     col1_reset="${white}resets ${five_hour_reset}${reset}"
-    col1_reset=$(pad_column "$col1_reset" "${#col1_reset_plain}" "$col1w")
+
+    # Cap-ETA: see ADR-0004. Append to the 5h reset cell when present.
+    five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
+    cap_eta_plain=$(claudefuel_cap_eta_segment "$five_hour_pct" "$five_hour_reset_epoch")
+    if [ -n "$cap_eta_plain" ]; then
+        col1_reset_plain+=" · ${cap_eta_plain}"
+        col1_reset+=" ${dim}· ${cap_eta_plain}${reset}"
+    fi
+
+    # Widen col1 when cap-ETA grows the reset cell — keeps Line 2/3 pipes aligned.
+    col1w_actual=$col1w
+    [ "${#col1_reset_plain}" -gt "$col1w_actual" ] && col1w_actual="${#col1_reset_plain}"
+    col1_bar=$(pad_column "$col1_bar_raw" "$col1_bar_vis_len" "$col1w_actual")
+    col1_reset=$(pad_column "$col1_reset" "${#col1_reset_plain}" "$col1w_actual")
 
     # ---- 7-day (weekly) ----
     seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')

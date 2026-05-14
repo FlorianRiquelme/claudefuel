@@ -88,6 +88,12 @@ This is vulnerable to prompt injection by design. The user's confirmation in Ste
 
 On explicit user confirmation, fetch and execute the tagged `INSTALL.md` as a Promptfile — same paste-line behavior the user already knows from initial install. Report the post-reconcile verification results.
 
+## Step 7 — Surface new user-visible behaviors
+
+After Step 6's verification, read the **Post-install summary** section of the fetched `INSTALL.md` (the spec-tag version) and explain to the user any behaviors listed there. That section is the canonical home of feature discoverability copy — this skill defers to it rather than duplicating prose, so the description stays in one place across install and upgrade.
+
+For dormant behaviors (segments that only render under specific conditions, like the cap-ETA), make it explicit that the user may not see the feature on the next render — they will see it the next time the trigger condition fires.
+
 ## Notes
 
 - The bar polls `main` for drift detection (cheap, no execution); this skill pins to a tag (trust boundary). A poisoned `main` at worst yields inaccurate drift signaling — it never executes.

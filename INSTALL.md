@@ -154,6 +154,13 @@ After reconcile, run all of these and report each pass/fail:
   Expected: produces output, exits 0. The output may contain ANSI escapes — that is fine.
 - Optional: open a new Claude Code session and confirm the status bar renders. Tell the user to do this; do not start a new session yourself.
 
+## Post-install summary
+
+After Verify passes, explain to the user in chat the user-visible bar behaviors — particularly the ones that are dormant until specific conditions occur, since they will not be visible on first render. This section is the canonical discoverability surface; the `/claudefuel.update` skill defers to it on upgrade so the prose lives in one place across install and upgrade.
+
+- **Drift signal (`↗ /claudefuel.update`).** Appears on Line 1 only when an upstream release is available. Invoking it routes to the upgrade skill.
+- **Cap-ETA (`~cap HH:MM-HH:MM`).** Appears on Line 3 next to the 5-hour `resets <time>` cell only when the user is on track to hit the 5-hour cap before reset. A rough estimate (tilde + range — never a precise time) derived from average burn rate over the current window. Dormant when healthy; the cell shows only `resets <time>` until burn rate exceeds reset-pace.
+
 ## Upgrade
 
 Identical to install. The user runs the same paste line again. Reconcile detects the installed version, performs the upgrade if the desired version is newer, and is a no-op otherwise. Every change writes a fresh `*.bak-<timestamp>` so previous installs are recoverable.
