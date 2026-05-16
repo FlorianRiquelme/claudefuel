@@ -3,7 +3,7 @@
 # Claude Code Status Line — Multi-Account Aware
 #
 # Line 1: [profile] Model | ctx <bar> <used>/<total> | thinking: on/off | effort: <level> | ↗ /claudefuel.update
-# Line 2: 5h: <bar> % | 7d: <bar> % | extra: <bar> $used/$limit
+# Line 2: 5h: <bar> % | 7d: <bar> % | extra: <currency><balance>
 # Line 3: ↻ <time> · ~cap <range> | ↻ <datetime> | ↻ <date>
 #
 # Supports CLAUDE_CONFIG_DIR for per-account usage display.
@@ -425,6 +425,58 @@ if $needs_refresh; then
     fi
 fi
 
+# ===== Prepaid credit balance (separate cache, longer TTL) =====
+# Balance changes slowly, so cache for 5 min to avoid hammering the API.
+prepaid_cache_file="/tmp/claude/statusline-prepaid-cache${CACHE_SUFFIX}.json"
+prepaid_cache_max_age=300
+prepaid_data=""
+
+if [ -f "$prepaid_cache_file" ]; then
+    p_mtime=$(stat -c %Y "$prepaid_cache_file" 2>/dev/null || stat -f %m "$prepaid_cache_file" 2>/dev/null)
+    p_age=$(( $(date +%s) - p_mtime ))
+    if [ "$p_age" -lt "$prepaid_cache_max_age" ]; then
+        prepaid_data=$(cat "$prepaid_cache_file" 2>/dev/null)
+    fi
+fi
+
+if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ]; then
+    # Token may be unset if usage cache was fresh — fetch it now
+    [ -z "$token" ] || [ "$token" = "null" ] && token=$(get_oauth_token)
+fi
+
+if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && [ -n "$token" ] && [ "$token" != "null" ]; then
+    # Resolve org UUID — cache long-term, it never changes
+    org_cache_file="/tmp/claude/statusline-orguuid-cache${CACHE_SUFFIX}"
+    org_uuid=""
+    [ -f "$org_cache_file" ] && org_uuid=$(cat "$org_cache_file" 2>/dev/null)
+    if [ -z "$org_uuid" ]; then
+        account_resp=$(curl -s --max-time 5 \
+            -H "Authorization: Bearer $token" \
+            -H "anthropic-beta: oauth-2025-04-20" \
+            -H "User-Agent: claude-code/2.1.34" \
+            "https://api.anthropic.com/api/oauth/account" 2>/dev/null)
+        org_uuid=$(echo "$account_resp" | jq -r '.memberships[0].organization.uuid // empty' 2>/dev/null)
+        [ -n "$org_uuid" ] && echo "$org_uuid" > "$org_cache_file"
+    fi
+
+    if [ -n "$org_uuid" ]; then
+        prepaid_resp=$(curl -s --max-time 5 \
+            -H "Authorization: Bearer $token" \
+            -H "anthropic-beta: oauth-2025-04-20" \
+            -H "User-Agent: claude-code/2.1.34" \
+            "https://api.anthropic.com/api/oauth/organizations/$org_uuid/prepaid/credits" 2>/dev/null)
+        if [ -n "$prepaid_resp" ] && echo "$prepaid_resp" | jq -e '.amount' >/dev/null 2>&1; then
+            prepaid_data="$prepaid_resp"
+            echo "$prepaid_resp" > "$prepaid_cache_file"
+        fi
+    fi
+fi
+
+# Fall back to stale prepaid cache
+if [ -z "$prepaid_data" ] && [ -f "$prepaid_cache_file" ]; then
+    prepaid_data=$(cat "$prepaid_cache_file" 2>/dev/null)
+fi
+
 # Cross-platform ISO to epoch conversion
 # Converts ISO 8601 timestamp (e.g. "2025-06-15T12:30:00Z" or "2025-06-15T12:30:00.123+00:00") to epoch seconds.
 # Properly handles UTC timestamps and converts to local time.
@@ -590,22 +642,21 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     col2_reset="${white}↻ ${seven_day_reset}${reset}"
     col2_reset=$(pad_column "$col2_reset" "${#col2_reset_plain}" "$col2w")
 
-    # ---- Extra usage ----
+    # ---- Extra usage (prepaid credit balance) ----
     col3_bar=""
     col3_reset=""
     extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')
-    if [ "$extra_enabled" = "true" ]; then
-        extra_pct=$(echo "$usage_data" | jq -r '.extra_usage.utilization // 0' | awk '{printf "%.0f", $1}')
-        extra_used=$(echo "$usage_data" | jq -r '.extra_usage.used_credits // 0' | awk '{printf "%.2f", $1/100}')
-        extra_limit=$(echo "$usage_data" | jq -r '.extra_usage.monthly_limit // 0' | awk '{printf "%.2f", $1/100}')
-        extra_bar=$(build_bar "$extra_pct" "$bar_width")
+    if [ "$extra_enabled" = "true" ] && [ -n "$prepaid_data" ]; then
+        prepaid_amount=$(echo "$prepaid_data" | jq -r '.amount // 0' | awk '{printf "%.2f", $1/100}')
+        prepaid_currency=$(echo "$prepaid_data" | jq -r '.currency // "USD"')
+        case "$prepaid_currency" in
+            EUR) sym="€" ;;
+            GBP) sym="£" ;;
+            JPY) sym="¥" ;;
+            *)   sym="\$" ;;
+        esac
 
-        # Next month 1st for reset date (macOS compatible)
-        extra_reset=$(date -v+1m -v1d +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]' || \
-                      date -d "$(date +%Y-%m-01) +1 month" +"%b %-d" 2>/dev/null)
-
-        col3_bar="${white}extra:${reset} ${extra_bar} ${cyan}\$${extra_used}/\$${extra_limit}${reset}"
-        col3_reset="${white}↻ ${extra_reset}${reset}"
+        col3_bar="${white}extra:${reset} ${cyan}${sym}${prepaid_amount}${reset}"
     fi
 
     # Assemble line 2: bars row
