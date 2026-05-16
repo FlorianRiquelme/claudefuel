@@ -439,12 +439,12 @@ if [ -f "$prepaid_cache_file" ]; then
     fi
 fi
 
-if [ -z "$prepaid_data" ]; then
+if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ]; then
     # Token may be unset if usage cache was fresh — fetch it now
     [ -z "$token" ] || [ "$token" = "null" ] && token=$(get_oauth_token)
 fi
 
-if [ -z "$prepaid_data" ] && [ -n "$token" ] && [ "$token" != "null" ]; then
+if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && [ -n "$token" ] && [ "$token" != "null" ]; then
     # Resolve org UUID — cache long-term, it never changes
     org_cache_file="/tmp/claude/statusline-orguuid-cache${CACHE_SUFFIX}"
     org_uuid=""
