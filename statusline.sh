@@ -3,8 +3,12 @@
 # Claude Code Status Line — Multi-Account Aware
 #
 # Line 1: [profile] Model | ctx <bar> <used>/<total> | thinking: on/off | effort: <level> | ↗ /claudefuel.update
-# Line 2: 5h: <bar> % | 7d: <bar> % | extra: <currency><balance>
+# Line 2: 5h: <bar> % [·age] | 7d: <bar> % | extra: <currency><balance> [·age]
 # Line 3: ↻ <time> · ~cap <range> | ↻ <datetime> | ↻ <date>
+#
+# Honest instrument: ·age marks stale cached data (never rendered as fresh);
+# when no usage data is available, line 2 becomes a one-glyph diagnosis plus
+# trailhead: <⊘|⚠|?> ✚ /claudefuel.doctor (auth / network / missing dep).
 #
 # Supports CLAUDE_CONFIG_DIR for per-account usage display.
 # When CLAUDE_CONFIG_DIR is set, keychain lookups and cache files are isolated per account.
@@ -23,6 +27,14 @@ input=$(cat)
 
 if [ -z "$input" ]; then
     printf "Claude"
+    exit 0
+fi
+
+# Honest instrument: a missing dependency must read FAILED, never render
+# a plausible partial bar. One-glyph diagnosis + a '✚ /claudefuel.doctor'
+# trailhead, mirroring the '↗ /claudefuel.update' drift pattern.
+if ! command -v jq >/dev/null 2>&1; then
+    printf "Claude | ? ✚ /claudefuel.doctor"
     exit 0
 fi
 
@@ -184,14 +196,13 @@ if [ -n "$drift_segment" ]; then
     line1+=" ${dim}|${reset} ${yellow}${drift_segment}${reset}"
 fi
 
-# ===== Cross-platform OAuth token resolution with auto-refresh =====
+# ===== Cross-platform OAuth token resolution (read-only) =====
 # Tries credential sources in order: env var → macOS Keychain → Linux creds file → GNOME Keyring
-# If the access token is expired, attempts refresh using the stored refresh token.
+# The render path never mutates credentials: an expired access token is
+# treated as an auth failure (render stale cache with an age marker) and
+# Claude Code refreshes the token on its own schedule.
 # Supports multiple keychain accounts (Claude Code changed the account name across versions).
 # When CLAUDE_CONFIG_DIR is set, keychain service name gets a hash suffix.
-
-OAUTH_CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-OAUTH_TOKEN_URL="https://platform.claude.com/v1/oauth/token"
 
 # Derive the keychain service name based on CLAUDE_CONFIG_DIR
 # Claude Code appends first 8 chars of SHA256(config_dir_path) to the service name
@@ -202,66 +213,6 @@ if [ -n "$CLAUDE_CONFIG_DIR" ]; then
     KEYCHAIN_SERVICE="Claude Code-credentials-${config_hash}"
     CACHE_SUFFIX="-${config_hash}"
 fi
-
-# Refresh the OAuth token and update the credential store
-# Usage: refresh_oauth_token <refresh_token> <store> [keychain_account]
-# Returns the new access token on success, empty string on failure
-refresh_oauth_token() {
-    local refresh_token="$1"
-    local store="$2"
-    local kc_account="$3"
-
-    local response
-    response=$(curl -s -L --max-time 5 -X POST "$OAUTH_TOKEN_URL" \
-        -H "Content-Type: application/json" \
-        -d "{\"grant_type\":\"refresh_token\",\"refresh_token\":\"$refresh_token\",\"client_id\":\"$OAUTH_CLIENT_ID\"}")
-
-    local new_access new_refresh expires_in
-    new_access=$(echo "$response" | jq -r '.access_token // empty' 2>/dev/null)
-    [ -z "$new_access" ] && return 1
-
-    new_refresh=$(echo "$response" | jq -r '.refresh_token // empty' 2>/dev/null)
-    expires_in=$(echo "$response" | jq -r '.expires_in // 28800' 2>/dev/null)
-    local expires_at_ms=$(( ($(date +%s) + expires_in) * 1000 ))
-
-    # Update the credential store with refreshed tokens
-    case "$store" in
-        keychain)
-            if [ -n "$kc_account" ]; then
-                local blob
-                blob=$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$kc_account" -w 2>/dev/null)
-                if [ -n "$blob" ]; then
-                    local updated
-                    updated=$(echo "$blob" | jq --arg at "$new_access" --arg rt "${new_refresh:-$refresh_token}" --argjson exp "$expires_at_ms" \
-                        '.claudeAiOauth.accessToken = $at | .claudeAiOauth.refreshToken = $rt | .claudeAiOauth.expiresAt = $exp')
-                    security delete-generic-password -s "$KEYCHAIN_SERVICE" -a "$kc_account" >/dev/null 2>&1
-                    security add-generic-password -s "$KEYCHAIN_SERVICE" -a "$kc_account" -w "$updated" >/dev/null 2>&1
-                fi
-            fi
-            ;;
-        file)
-            local creds_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
-            if [ -f "$creds_file" ]; then
-                local updated
-                updated=$(jq --arg at "$new_access" --arg rt "${new_refresh:-$refresh_token}" --argjson exp "$expires_at_ms" \
-                    '.claudeAiOauth.accessToken = $at | .claudeAiOauth.refreshToken = $rt | .claudeAiOauth.expiresAt = $exp' "$creds_file")
-                echo "$updated" > "$creds_file"
-            fi
-            ;;
-        gnome)
-            local blob
-            blob=$(timeout 2 secret-tool lookup service "Claude Code-credentials" 2>/dev/null)
-            if [ -n "$blob" ]; then
-                local updated
-                updated=$(echo "$blob" | jq --arg at "$new_access" --arg rt "${new_refresh:-$refresh_token}" --argjson exp "$expires_at_ms" \
-                    '.claudeAiOauth.accessToken = $at | .claudeAiOauth.refreshToken = $rt | .claudeAiOauth.expiresAt = $exp')
-                echo "$updated" | timeout 2 secret-tool store --label="Claude Code-credentials" service "Claude Code-credentials" 2>/dev/null
-            fi
-            ;;
-    esac
-
-    echo "$new_access"
-}
 
 # Check if token is expired (with 60-second buffer)
 is_token_expired() {
@@ -276,7 +227,7 @@ is_token_expired() {
 # Usage: try_keychain_account <account_name>
 try_keychain_account() {
     local acct="$1"
-    local blob token expires_at refresh
+    local blob token expires_at
 
     blob=$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$acct" -w 2>/dev/null) || return 1
     [ -z "$blob" ] && return 1
@@ -286,21 +237,12 @@ try_keychain_account() {
 
     expires_at=$(echo "$blob" | jq -r '.claudeAiOauth.expiresAt // empty' 2>/dev/null)
 
-    if is_token_expired "$expires_at"; then
-        # Token expired — try refresh
-        refresh=$(echo "$blob" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null)
-        if [ -n "$refresh" ] && [ "$refresh" != "null" ]; then
-            token=$(refresh_oauth_token "$refresh" "keychain" "$acct")
-        else
-            return 1
-        fi
-    fi
+    # Read-only credentials: an expired token is an auth failure, never a
+    # render-path refresh. Claude Code refreshes on its own schedule.
+    is_token_expired "$expires_at" && return 1
 
-    if [ -n "$token" ] && [ "$token" != "null" ]; then
-        echo "$token"
-        return 0
-    fi
-    return 1
+    echo "$token"
+    return 0
 }
 
 get_oauth_token() {
@@ -334,23 +276,13 @@ get_oauth_token() {
     # 3. Linux credentials file
     local creds_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
     if [ -f "$creds_file" ]; then
-        local expires_at refresh
+        local expires_at
         token=$(jq -r '.claudeAiOauth.accessToken // empty' "$creds_file" 2>/dev/null)
         expires_at=$(jq -r '.claudeAiOauth.expiresAt // empty' "$creds_file" 2>/dev/null)
-        refresh=$(jq -r '.claudeAiOauth.refreshToken // empty' "$creds_file" 2>/dev/null)
 
-        if [ -n "$token" ] && [ "$token" != "null" ]; then
-            if is_token_expired "$expires_at"; then
-                if [ -n "$refresh" ] && [ "$refresh" != "null" ]; then
-                    token=$(refresh_oauth_token "$refresh" "file")
-                else
-                    token=""
-                fi
-            fi
-            if [ -n "$token" ] && [ "$token" != "null" ]; then
-                echo "$token"
-                return 0
-            fi
+        if [ -n "$token" ] && [ "$token" != "null" ] && ! is_token_expired "$expires_at"; then
+            echo "$token"
+            return 0
         fi
     fi
 
@@ -359,23 +291,13 @@ get_oauth_token() {
         local blob
         blob=$(timeout 2 secret-tool lookup service "Claude Code-credentials" 2>/dev/null)
         if [ -n "$blob" ]; then
-            local expires_at refresh
+            local expires_at
             token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
             expires_at=$(echo "$blob" | jq -r '.claudeAiOauth.expiresAt // empty' 2>/dev/null)
-            refresh=$(echo "$blob" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null)
 
-            if [ -n "$token" ] && [ "$token" != "null" ]; then
-                if is_token_expired "$expires_at"; then
-                    if [ -n "$refresh" ] && [ "$refresh" != "null" ]; then
-                        token=$(refresh_oauth_token "$refresh" "gnome")
-                    else
-                        token=""
-                    fi
-                fi
-                if [ -n "$token" ] && [ "$token" != "null" ]; then
-                    echo "$token"
-                    return 0
-                fi
+            if [ -n "$token" ] && [ "$token" != "null" ] && ! is_token_expired "$expires_at"; then
+                echo "$token"
+                return 0
             fi
         fi
     fi
@@ -403,25 +325,41 @@ if [ -f "$cache_file" ]; then
     fi
 fi
 
-# Fetch fresh data if cache is stale
+# Fetch fresh data if cache is stale. Honest instrument: when the fetch
+# can't happen or fails, classify why (missing dep / auth / network) so a
+# failed gauge reads FAILED instead of rendering a plausible value.
+usage_failure=""    # one of: dep, auth, net — set when a fresh fetch was impossible
+usage_stale_age=""  # seconds since the cache was written, set on stale fallback
 if $needs_refresh; then
-    token=$(get_oauth_token)
-    if [ -n "$token" ] && [ "$token" != "null" ]; then
-        response=$(curl -s --max-time 5 \
-            -H "Accept: application/json" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $token" \
-            -H "anthropic-beta: oauth-2025-04-20" \
-            -H "User-Agent: claude-code/2.1.34" \
-            "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
-        if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
-            usage_data="$response"
-            echo "$response" > "$cache_file"
+    if ! command -v curl >/dev/null 2>&1; then
+        usage_failure="dep"
+    else
+        token=$(get_oauth_token)
+        if [ -n "$token" ] && [ "$token" != "null" ]; then
+            response=$(curl -s --max-time 5 \
+                -H "Accept: application/json" \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer $token" \
+                -H "anthropic-beta: oauth-2025-04-20" \
+                -H "User-Agent: claude-code/2.1.34" \
+                "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+            if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
+                usage_data="$response"
+                echo "$response" > "$cache_file"
+            else
+                usage_failure="net"
+            fi
+        else
+            usage_failure="auth"
         fi
     fi
-    # Fall back to stale cache
+    # Fall back to stale cache — rendered with an age marker, never as fresh
     if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
         usage_data=$(cat "$cache_file" 2>/dev/null)
+        if [ -n "$usage_data" ]; then
+            stale_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
+            usage_stale_age=$(( $(date +%s) - ${stale_mtime:-0} ))
+        fi
     fi
 fi
 
@@ -472,9 +410,14 @@ if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && [ -n "$token" ] && 
     fi
 fi
 
-# Fall back to stale prepaid cache
+# Fall back to stale prepaid cache — rendered with an age marker, never as fresh
+prepaid_stale_age=""
 if [ -z "$prepaid_data" ] && [ -f "$prepaid_cache_file" ]; then
     prepaid_data=$(cat "$prepaid_cache_file" 2>/dev/null)
+    if [ -n "$prepaid_data" ]; then
+        p_stale_mtime=$(stat -c %Y "$prepaid_cache_file" 2>/dev/null || stat -f %m "$prepaid_cache_file" 2>/dev/null)
+        prepaid_stale_age=$(( $(date +%s) - ${p_stale_mtime:-0} ))
+    fi
 fi
 
 # Cross-platform ISO to epoch conversion
@@ -577,6 +520,18 @@ claudefuel_cap_eta_segment() {
     printf "~cap %s-%s" "$low_str" "$high_str"
 }
 
+# Format a cache age in seconds as a compact marker value ("9m", "5h").
+# Used by the staleness age marker: stale cache must never render
+# indistinguishably from fresh data.
+format_cache_age() {
+    local age=$1
+    if [ "$age" -ge 3600 ]; then
+        printf "%dh" $(( age / 3600 ))
+    else
+        printf "%dm" $(( age / 60 ))
+    fi
+}
+
 # Pad column to fixed width (ignoring ANSI codes)
 # Usage: pad_column <text_with_ansi> <visible_length> <column_width>
 pad_column() {
@@ -609,6 +564,14 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     # Calculate visible length: "5h: " + bar + " " + "XX%"
     col1_bar_vis_len=$(( 4 + bar_width + 1 + ${#five_hour_pct} + 1 ))
     col1_bar_raw="${white}5h:${reset} ${five_hour_bar} ${cyan}${five_hour_pct}%${reset}"
+
+    # Staleness age marker — one snapshot drives lines 2–3, so one marker
+    # on the leading (5h) cell: `·9m` = this data is 9 minutes old.
+    if [ -n "$usage_stale_age" ]; then
+        stale_age_str=$(format_cache_age "$usage_stale_age")
+        col1_bar_raw+=" ${dim}·${stale_age_str}${reset}"
+        col1_bar_vis_len=$(( col1_bar_vis_len + 2 + ${#stale_age_str} ))
+    fi
     # col1_bar padding deferred — see col1w_actual computation below (cap-ETA may widen col1).
 
     col1_reset_plain="↻ ${five_hour_reset}"
@@ -657,6 +620,11 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
         esac
 
         col3_bar="${white}extra:${reset} ${cyan}${sym}${prepaid_amount}${reset}"
+
+        # Staleness age marker for the prepaid cell (separate cache, own age).
+        if [ -n "$prepaid_stale_age" ]; then
+            col3_bar+=" ${dim}·$(format_cache_age "$prepaid_stale_age")${reset}"
+        fi
     fi
 
     # Assemble line 2: bars row
@@ -666,6 +634,16 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     # Assemble line 3: resets row
     line3="${col1_reset}${sep}${col2_reset}"
     [ -n "$col3_reset" ] && line3+="${sep}${col3_reset}"
+elif [ -n "$usage_failure" ]; then
+    # Failed gauge reads FAILED: no data to show and a known failure class.
+    # One-glyph diagnosis + trailhead, mirroring the ↗ drift segment:
+    #   ⊘ auth (credentials missing/expired), ⚠ network, ? missing dependency.
+    case "$usage_failure" in
+        auth) fail_glyph="⊘" ;;
+        net)  fail_glyph="⚠" ;;
+        *)    fail_glyph="?" ;;
+    esac
+    line2="${dim}${fail_glyph}${reset} ${yellow}✚ /claudefuel.doctor${reset}"
 fi
 
 # Output all lines
