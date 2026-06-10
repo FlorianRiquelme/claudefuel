@@ -19,6 +19,141 @@ set -o pipefail # `a | b || c` must reflect a's failure, not b's success.
                 # masks the BSD failure on Linux and the fallback never
                 # runs, yielding empty time strings.
 
+# ===== --snapshot: versioned machine-readable internal API =====
+# Pure read of the on-disk caches plus the ADR-0004 derived math, dumped
+# as JSON. No fetches, no stdin, no credential access, no cache writes.
+# Consumed by the /claudefuel.why and /claudefuel.coach skills — the
+# display stays dumb; the running LLM session does the explaining.
+# Schema is versioned via .schema.version; breaking field changes bump it.
+if [ "${1:-}" = "--snapshot" ]; then
+    snapshot_now=$(date +%s)
+
+    snapshot_suffix=""
+    snapshot_profile="default"
+    if [ -n "$CLAUDE_CONFIG_DIR" ]; then
+        snapshot_hash=$(echo -n "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
+        snapshot_suffix="-${snapshot_hash}"
+        snapshot_profile=$(basename "$CLAUDE_CONFIG_DIR" | sed 's/^\.claude-//')
+    fi
+
+    snapshot_usage_path="/tmp/claude/statusline-usage-cache${snapshot_suffix}.json"
+    snapshot_prepaid_path="/tmp/claude/statusline-prepaid-cache${snapshot_suffix}.json"
+    snapshot_version_path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cache/claudefuel-version.json"
+
+    # Age of a file in seconds, or the literal string "null" when absent.
+    snapshot_age() {
+        [ -f "$1" ] || { echo "null"; return; }
+        local m
+        m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)
+        [ -z "$m" ] && { echo "null"; return; }
+        echo $(( snapshot_now - m ))
+    }
+
+    # Compact JSON contents of a file, or the literal string "null".
+    snapshot_json() {
+        local j
+        j=$(jq -c . "$1" 2>/dev/null)
+        [ -z "$j" ] && j=null
+        echo "$j"
+    }
+
+    snapshot_installed=$(head -20 "${BASH_SOURCE[0]:-$0}" \
+        | grep -E '^# claudefuel:' | head -n1 \
+        | sed -E 's/^# claudefuel: v//')
+    snapshot_upstream=$(jq -r '.upstream_version // empty' "$snapshot_version_path" 2>/dev/null)
+
+    jq -n \
+        --argjson now "$snapshot_now" \
+        --arg profile "$snapshot_profile" \
+        --arg config_dir "${CLAUDE_CONFIG_DIR:-}" \
+        --arg installed "${snapshot_installed:-}" \
+        --arg upstream "${snapshot_upstream:-}" \
+        --arg usage_path "$snapshot_usage_path" \
+        --arg prepaid_path "$snapshot_prepaid_path" \
+        --arg version_path "$snapshot_version_path" \
+        --argjson usage "$(snapshot_json "$snapshot_usage_path")" \
+        --argjson usage_age "$(snapshot_age "$snapshot_usage_path")" \
+        --argjson prepaid "$(snapshot_json "$snapshot_prepaid_path")" \
+        --argjson prepaid_age "$(snapshot_age "$snapshot_prepaid_path")" \
+        --argjson version_age "$(snapshot_age "$snapshot_version_path")" \
+        '
+        def iso2epoch:
+          if . == null or . == "" then null
+          else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")
+                | try (strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch null)
+          end;
+
+        ($usage.five_hour.utilization // null) as $util
+        | (if $util == null then null else ($util | round) end) as $pct
+        | ($usage.five_hour.resets_at // null) as $resets_iso
+        | ($resets_iso | iso2epoch) as $resets_epoch
+        | (if $resets_epoch == null then null else $resets_epoch - 18000 end) as $window_started
+        | (if $window_started == null then null else ($now - $window_started) end) as $elapsed
+        | (if $pct != null and $elapsed != null and $elapsed > 0
+           then ($pct / $elapsed * 3600) else null end) as $burn_rate
+        | (if $pct != null and $pct > 0 and $elapsed != null and $elapsed > 0
+           then (($now + (100 - $pct) * $elapsed / $pct) | floor) else null end) as $cap_eta
+        | (if $pct == null then null else $pct >= 10 end) as $noise_pass
+        | (if $cap_eta == null or $resets_epoch == null then false
+           else $cap_eta < $resets_epoch end) as $threshold_pass
+        | {
+            schema: { name: "claudefuel-snapshot", version: 1 },
+            generated_at_epoch: $now,
+            generated_at: ($now | todate),
+            profile: {
+              name: $profile,
+              config_dir: (if $config_dir == "" then null else $config_dir end)
+            },
+            versions: {
+              installed: (if $installed == "" then null else $installed end),
+              upstream: (if $upstream == "" then null else $upstream end),
+              drift: (if $upstream == "" or $installed == "" then null
+                      else $upstream != $installed end)
+            },
+            caches: {
+              usage: {
+                path: $usage_path, present: ($usage != null),
+                age_seconds: $usage_age, ttl_seconds: 60,
+                fresh: ($usage_age != null and $usage_age < 60)
+              },
+              prepaid: {
+                path: $prepaid_path, present: ($prepaid != null),
+                age_seconds: $prepaid_age, ttl_seconds: 300,
+                fresh: ($prepaid_age != null and $prepaid_age < 300)
+              },
+              upstream_version: {
+                path: $version_path, present: ($version_age != null),
+                age_seconds: $version_age, ttl_seconds: 21600,
+                fresh: ($version_age != null and $version_age < 21600)
+              }
+            },
+            usage: $usage,
+            prepaid: $prepaid,
+            derived: {
+              five_hour: {
+                window_length_seconds: 18000,
+                pct_used: $pct,
+                resets_at: $resets_iso,
+                resets_at_epoch: $resets_epoch,
+                window_started_epoch: $window_started,
+                elapsed_seconds: $elapsed,
+                burn_rate_pct_per_hour: $burn_rate,
+                reset_pace_pct_per_hour: 20,
+                cap_eta_epoch: $cap_eta,
+                cap_eta: (if $cap_eta == null then null else ($cap_eta | todate) end),
+                cap_eta_range_seconds: 900,
+                gates: {
+                  noise_floor: { rule: "pct_used >= 10", pass: $noise_pass },
+                  threshold: { rule: "cap_eta < resets_at (burn rate > reset-pace)", pass: $threshold_pass }
+                },
+                cap_eta_rendered: (($noise_pass == true) and $threshold_pass)
+              }
+            }
+          }
+        '
+    exit $?
+fi
+
 input=$(cat)
 
 if [ -z "$input" ]; then

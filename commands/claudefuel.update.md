@@ -69,7 +69,7 @@ Branch on `$state`:
 
 ## Step 4 — Render the diff for trust review
 
-Read the installed `statusline.sh` from disk and fetch the spec's `statusline.sh` at the same tag (`refs/tags/${latest_tag}`); diff them. Also show the `INSTALL.md` diff between installed-tag and spec-tag if locally resolvable, plus a list of every file the Promptfile will create or modify (the bundle from the desired state — `statusline.sh`, five `commands/claudefuel.*.md`, `cache/`, the `.statusLine` key in `settings.json`).
+Read the installed `statusline.sh` from disk and fetch the spec's `statusline.sh` at the same tag (`refs/tags/${latest_tag}`); diff them. Also show the `INSTALL.md` diff between installed-tag and spec-tag if locally resolvable, plus a list of every file the Promptfile will create or modify (the bundle from the desired state — `statusline.sh`, seven `commands/claudefuel.*.md`, `cache/`, the `.statusLine` key in `settings.json`).
 
 This is the **primary trust check** — the user reads and explicitly confirms before anything writes.
 

@@ -7,7 +7,7 @@
 # in what order, with what postconditions), not the execution.
 
 INSTALL_MD="${BATS_TEST_DIRNAME}/../INSTALL.md"
-SKILLS=(update doctor rollback uninstall configure)
+SKILLS=(update doctor rollback uninstall configure why coach)
 
 @test "INSTALL.md names every shipped /claudefuel.* command file" {
   for s in "${SKILLS[@]}"; do

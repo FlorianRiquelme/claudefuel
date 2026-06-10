@@ -13,8 +13,8 @@ Check these in order and report each result on its own line:
    - `head -20 "$target_dir/statusline.sh" | grep -E '^# claudefuel: v[0-9]+\.[0-9]+\.[0-9]+$'`
 3. **`settings.json` is valid JSON with the expected `.statusLine` value.**
    - `jq -e '.statusLine.command == "~/.claude/statusline.sh"' "$target_dir/settings.json"`
-4. **All five command files present, each with a parseable `# claudefuel-skill:` header.**
-   - For each of `update`, `doctor`, `rollback`, `uninstall`, `configure`: file exists and `head -20` contains a matching header line.
+4. **All seven command files present, each with a parseable `# claudefuel-skill:` header.**
+   - For each of `update`, `doctor`, `rollback`, `uninstall`, `configure`, `why`, `coach`: file exists and `head -20` contains a matching header line.
 5. **`jq` and `curl` are on `PATH`.**
 6. **Statusline runs without error on a sample input.**
    ```bash
