@@ -26,6 +26,22 @@ if [ -z "$input" ]; then
     exit 0
 fi
 
+# Timing mode (CLAUDEFUEL_TIMING=1): emit per-stage wall time to stderr so
+# /claudefuel.doctor can check renders against the published latency budget.
+# Uses jq as a portable millisecond clock (BSD date has no %N); each mark
+# costs one extra jq spawn, so reported timings carry a few ms of
+# instrumentation overhead. Stages: jq-parse, drift, usage, prepaid, render.
+if [ -n "$CLAUDEFUEL_TIMING" ]; then
+    _cf_t_last=$(jq -n 'now*1000|floor')
+fi
+cf_timing_mark() {
+    [ -n "$CLAUDEFUEL_TIMING" ] || return 0
+    local _cf_now
+    _cf_now=$(jq -n 'now*1000|floor')
+    printf 'claudefuel-timing: %s %dms\n' "$1" "$(( _cf_now - _cf_t_last ))" >&2
+    _cf_t_last=$_cf_now
+}
+
 # ANSI colors
 blue='\033[38;2;0;153;255m'
 orange='\033[38;2;255;176;85m'
@@ -106,6 +122,8 @@ thinking_val=$(echo "$input" | jq -r '.thinking.enabled // false')
 # Absent when the current model does not support the effort parameter.
 effort_level=$(echo "$input" | jq -r '.effort.level // empty')
 
+cf_timing_mark jq-parse
+
 # ===== LINE 1: [profile] Model | ctx <bar> <used>/<total> | thinking | effort =====
 # Show active profile name when using CLAUDE_CONFIG_DIR (e.g. "work", "personal")
 profile_label=""
@@ -130,13 +148,34 @@ if [ -n "$effort_level" ]; then
     line1+=" ${dim}|${reset} effort: ${cyan}${effort_level}${reset}"
 fi
 
+# Fetch the upstream version header and atomically publish it to the drift
+# cache (tmpfile+mv, so a concurrent render never reads a half-written
+# file). Echoes the version on success. Shared by the synchronous
+# first-ever-render path and the detached background refresh.
+# Usage: claudefuel_fetch_upstream_version <cache_dir> <cache_file>
+claudefuel_fetch_upstream_version() {
+    local cache_dir="$1" cache_file="$2" fresh
+    fresh=$(curl -fsSL --connect-timeout 2 --max-time 3 \
+        "https://raw.githubusercontent.com/FlorianRiquelme/claudefuel/main/statusline.sh" 2>/dev/null \
+        | head -20 | grep -E '^# claudefuel:' | head -n1 \
+        | sed -E 's/^# claudefuel: v//')
+    if [ -n "$fresh" ]; then
+        mkdir -p "$cache_dir"
+        printf '{"upstream_version":"%s"}\n' "$fresh" > "$cache_file.tmp.$$" \
+            && mv "$cache_file.tmp.$$" "$cache_file"
+        echo "$fresh"
+    fi
+}
+
 # Drift detection — when the cached upstream version differs from the
 # installed version, append a single '↗ /claudefuel.update' segment to
 # line 1. No count, no growth in bar height, no segment when equal.
 # Cache lives at $CLAUDE_CONFIG_DIR/cache/claudefuel-version.json
-# (or ~/.claude/cache/), TTL 6h. When stale, attempt one short-timeout
-# fetch of raw statusline.sh from main; on failure keep the stale value
-# (offline tolerance). Set CLAUDEFUEL_OFFLINE=1 to skip the fetch.
+# (or ~/.claude/cache/), TTL 6h. Never-block: a stale cached value still
+# paints this render while a detached one-shot fetch refreshes the cache
+# for the next render (see the no-daemon note at the usage fetch below);
+# only a missing cache fetches synchronously (first-ever render).
+# Set CLAUDEFUEL_OFFLINE=1 to skip any fetch.
 claudefuel_drift_segment() {
     local cache_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cache"
     local cache_file="$cache_dir/claudefuel-version.json"
@@ -161,15 +200,16 @@ claudefuel_drift_segment() {
     fi
 
     if $should_fetch && [ -z "$CLAUDEFUEL_OFFLINE" ]; then
-        local fresh
-        fresh=$(curl -fsSL --connect-timeout 2 --max-time 3 \
-            "https://raw.githubusercontent.com/FlorianRiquelme/claudefuel/main/statusline.sh" 2>/dev/null \
-            | head -20 | grep -E '^# claudefuel:' | head -n1 \
-            | sed -E 's/^# claudefuel: v//')
-        if [ -n "$fresh" ]; then
-            upstream_version="$fresh"
-            mkdir -p "$cache_dir"
-            printf '{"upstream_version":"%s"}\n' "$fresh" > "$cache_file"
+        if [ -n "$upstream_version" ]; then
+            # Stale value paints below; refresh lands for the next render.
+            # touch claims the refresh so overlapping renders don't re-fire.
+            touch "$cache_file"
+            ( claudefuel_fetch_upstream_version "$cache_dir" "$cache_file" ) \
+                >/dev/null 2>&1 </dev/null &
+            disown
+        else
+            # First-ever render: nothing cached to paint, fetch synchronously.
+            upstream_version=$(claudefuel_fetch_upstream_version "$cache_dir" "$cache_file")
         fi
     fi
 
@@ -183,6 +223,8 @@ drift_segment=$(claudefuel_drift_segment)
 if [ -n "$drift_segment" ]; then
     line1+=" ${dim}|${reset} ${yellow}${drift_segment}${reset}"
 fi
+
+cf_timing_mark drift
 
 # ===== Cross-platform OAuth token resolution with auto-refresh =====
 # Tries credential sources in order: env var → macOS Keychain → Linux creds file → GNOME Keyring
@@ -389,64 +431,86 @@ cache_file="/tmp/claude/statusline-usage-cache${CACHE_SUFFIX}.json"
 cache_max_age=60  # seconds between API calls
 mkdir -p /tmp/claude
 
+# Fetch /api/oauth/usage and atomically publish it to the usage cache
+# (tmpfile+mv, so a concurrent render never reads a half-written file).
+# Echoes the response on success. Shared by the synchronous
+# first-ever-render path and the detached background refresh.
+claudefuel_fetch_usage() {
+    local token="$1" response
+    response=$(curl -s --max-time 5 \
+        -H "Accept: application/json" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $token" \
+        -H "anthropic-beta: oauth-2025-04-20" \
+        -H "User-Agent: claude-code/2.1.34" \
+        "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+    if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
+        echo "$response" > "$cache_file.tmp.$$" && mv "$cache_file.tmp.$$" "$cache_file"
+        echo "$response"
+    fi
+}
+
 needs_refresh=true
 usage_data=""
 
-# Check cache
+# Cache-first paint: read whatever cache exists — fresh or stale — so the
+# render never waits on the network once a cache file is on disk.
 if [ -f "$cache_file" ]; then
+    usage_data=$(cat "$cache_file" 2>/dev/null)
     cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
     now=$(date +%s)
     cache_age=$(( now - cache_mtime ))
-    if [ "$cache_age" -lt "$cache_max_age" ]; then
-        needs_refresh=false
-        usage_data=$(cat "$cache_file" 2>/dev/null)
+    [ "$cache_age" -lt "$cache_max_age" ] && needs_refresh=false
+fi
+
+# Never-block fetch path. When a stale cache was painted above, refresh it
+# with a DETACHED ONE-SHOT background fetch whose result benefits the next
+# render. This stays on the right side of ADR-0003's no-daemon cliff: the
+# background job is a single token-lookup + curl + atomic mv that exits on
+# its own — no loop, no polling interval, no PID tracking or supervision,
+# no IPC. Nothing outlives one fetch, and the bar itself stays a pure
+# function of (stdin, env, cache files). Its stdio is detached from the
+# statusline's pipes so Claude Code never waits on the child. The `touch`
+# on the stale cache claims the refresh so overlapping renders don't
+# stampede duplicate fetches; if the fetch fails, the claim expires after
+# one TTL and the next render simply re-fires (offline tolerance).
+# CLAUDEFUEL_OFFLINE=1 skips the fetch entirely.
+if $needs_refresh && [ -z "$CLAUDEFUEL_OFFLINE" ]; then
+    if [ -n "$usage_data" ]; then
+        touch "$cache_file"
+        (
+            token=$(get_oauth_token)
+            if [ -n "$token" ] && [ "$token" != "null" ]; then
+                claudefuel_fetch_usage "$token"
+            fi
+        ) >/dev/null 2>&1 </dev/null &
+        disown
+    else
+        # First-ever render (no cache at all): fetch synchronously so the
+        # bar doesn't paint empty on install.
+        token=$(get_oauth_token)
+        if [ -n "$token" ] && [ "$token" != "null" ]; then
+            usage_data=$(claudefuel_fetch_usage "$token")
+        fi
     fi
 fi
 
-# Fetch fresh data if cache is stale
-if $needs_refresh; then
-    token=$(get_oauth_token)
-    if [ -n "$token" ] && [ "$token" != "null" ]; then
-        response=$(curl -s --max-time 5 \
-            -H "Accept: application/json" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $token" \
-            -H "anthropic-beta: oauth-2025-04-20" \
-            -H "User-Agent: claude-code/2.1.34" \
-            "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
-        if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
-            usage_data="$response"
-            echo "$response" > "$cache_file"
-        fi
-    fi
-    # Fall back to stale cache
-    if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
-        usage_data=$(cat "$cache_file" 2>/dev/null)
-    fi
-fi
+cf_timing_mark usage
 
 # ===== Prepaid credit balance (separate cache, longer TTL) =====
 # Balance changes slowly, so cache for 5 min to avoid hammering the API.
 prepaid_cache_file="/tmp/claude/statusline-prepaid-cache${CACHE_SUFFIX}.json"
+org_cache_file="/tmp/claude/statusline-orguuid-cache${CACHE_SUFFIX}"
 prepaid_cache_max_age=300
 prepaid_data=""
+prepaid_stale=false
 
-if [ -f "$prepaid_cache_file" ]; then
-    p_mtime=$(stat -c %Y "$prepaid_cache_file" 2>/dev/null || stat -f %m "$prepaid_cache_file" 2>/dev/null)
-    p_age=$(( $(date +%s) - p_mtime ))
-    if [ "$p_age" -lt "$prepaid_cache_max_age" ]; then
-        prepaid_data=$(cat "$prepaid_cache_file" 2>/dev/null)
-    fi
-fi
-
-if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ]; then
-    # Token may be unset if usage cache was fresh — fetch it now
-    [ -z "$token" ] || [ "$token" = "null" ] && token=$(get_oauth_token)
-fi
-
-if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && [ -n "$token" ] && [ "$token" != "null" ]; then
-    # Resolve org UUID — cache long-term, it never changes
-    org_cache_file="/tmp/claude/statusline-orguuid-cache${CACHE_SUFFIX}"
+# Resolve org UUID (cached long-term, it never changes) and fetch the
+# prepaid balance, atomically published via tmpfile+mv. Echoes the
+# response on success. Shared by the synchronous first-ever-render path
+# and the detached background refresh.
+claudefuel_fetch_prepaid() {
+    local token="$1" org_uuid account_resp prepaid_resp
     org_uuid=""
     [ -f "$org_cache_file" ] && org_uuid=$(cat "$org_cache_file" 2>/dev/null)
     if [ -z "$org_uuid" ]; then
@@ -458,24 +522,51 @@ if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && [ -n "$token" ] && 
         org_uuid=$(echo "$account_resp" | jq -r '.memberships[0].organization.uuid // empty' 2>/dev/null)
         [ -n "$org_uuid" ] && echo "$org_uuid" > "$org_cache_file"
     fi
+    [ -z "$org_uuid" ] && return 0
 
-    if [ -n "$org_uuid" ]; then
-        prepaid_resp=$(curl -s --max-time 5 \
-            -H "Authorization: Bearer $token" \
-            -H "anthropic-beta: oauth-2025-04-20" \
-            -H "User-Agent: claude-code/2.1.34" \
-            "https://api.anthropic.com/api/oauth/organizations/$org_uuid/prepaid/credits" 2>/dev/null)
-        if [ -n "$prepaid_resp" ] && echo "$prepaid_resp" | jq -e '.amount' >/dev/null 2>&1; then
-            prepaid_data="$prepaid_resp"
-            echo "$prepaid_resp" > "$prepaid_cache_file"
+    prepaid_resp=$(curl -s --max-time 5 \
+        -H "Authorization: Bearer $token" \
+        -H "anthropic-beta: oauth-2025-04-20" \
+        -H "User-Agent: claude-code/2.1.34" \
+        "https://api.anthropic.com/api/oauth/organizations/$org_uuid/prepaid/credits" 2>/dev/null)
+    if [ -n "$prepaid_resp" ] && echo "$prepaid_resp" | jq -e '.amount' >/dev/null 2>&1; then
+        echo "$prepaid_resp" > "$prepaid_cache_file.tmp.$$" \
+            && mv "$prepaid_cache_file.tmp.$$" "$prepaid_cache_file"
+        echo "$prepaid_resp"
+    fi
+}
+
+# Cache-first paint: stale balance still renders this turn.
+if [ -f "$prepaid_cache_file" ]; then
+    prepaid_data=$(cat "$prepaid_cache_file" 2>/dev/null)
+    p_mtime=$(stat -c %Y "$prepaid_cache_file" 2>/dev/null || stat -f %m "$prepaid_cache_file" 2>/dev/null)
+    p_age=$(( $(date +%s) - p_mtime ))
+    [ "$p_age" -ge "$prepaid_cache_max_age" ] && prepaid_stale=true
+fi
+
+if [ -z "$CLAUDEFUEL_OFFLINE" ]; then
+    if [ -n "$prepaid_data" ] && $prepaid_stale; then
+        # Detached one-shot refresh — see the no-daemon note at the usage
+        # fetch above; touch claims the refresh against overlapping renders.
+        touch "$prepaid_cache_file"
+        (
+            token=$(get_oauth_token)
+            if [ -n "$token" ] && [ "$token" != "null" ]; then
+                claudefuel_fetch_prepaid "$token"
+            fi
+        ) >/dev/null 2>&1 </dev/null &
+        disown
+    elif [ -z "$prepaid_data" ]; then
+        # First-ever render: fetch synchronously. Token may be unset if the
+        # usage cache was fresh — resolve it now.
+        [ -z "$token" ] || [ "$token" = "null" ] && token=$(get_oauth_token)
+        if [ -n "$token" ] && [ "$token" != "null" ]; then
+            prepaid_data=$(claudefuel_fetch_prepaid "$token")
         fi
     fi
 fi
 
-# Fall back to stale prepaid cache
-if [ -z "$prepaid_data" ] && [ -f "$prepaid_cache_file" ]; then
-    prepaid_data=$(cat "$prepaid_cache_file" 2>/dev/null)
-fi
+cf_timing_mark prepaid
 
 # Cross-platform ISO to epoch conversion
 # Converts ISO 8601 timestamp (e.g. "2025-06-15T12:30:00Z" or "2025-06-15T12:30:00.123+00:00") to epoch seconds.
@@ -672,5 +763,7 @@ fi
 printf "%b" "$line1"
 [ -n "$line2" ] && printf "\n%b" "$line2"
 [ -n "$line3" ] && printf "\n%b" "$line3"
+
+cf_timing_mark render
 
 exit 0
