@@ -3,7 +3,7 @@
 # Claude Code Status Line — Multi-Account Aware
 #
 # Line 1: [profile] Model | ctx <bar> <used>/<total> | thinking: on/off | effort: <level> | ↗ /claudefuel.update
-# Line 2: 5h: <bar> % | 7d: <bar> % | extra: <currency><balance>
+# Line 2: 5h: <bar> % | 7d: <bar> % | extra: <currency><balance> | ⇄ <profile> <pct>% (<age>)
 # Line 3: ↻ <time> · ~cap <range> | ↻ <datetime> | ↻ <date>
 #
 # Supports CLAUDE_CONFIG_DIR for per-account usage display.
@@ -18,6 +18,126 @@ set -o pipefail # `a | b || c` must reflect a's failure, not b's success.
                 # rely on this: without pipefail, the trailing `tr`/`sed`
                 # masks the BSD failure on Linux and the fallback never
                 # runs, yielding empty time strings.
+
+# ===== Cross-profile sibling caches (read-only) =====
+# Every profile that has rendered recently leaves a usage cache in
+# /tmp/claude, keyed by the same sha256-of-CLAUDE_CONFIG_DIR suffix the
+# credential section below derives (CACHE_SUFFIX). These helpers read
+# those sibling caches and nothing else — they never fetch for a
+# non-active profile (multi-source fanout is an ADR-0003 rewrite cliff).
+# Sibling data is always a snapshot of unknown freshness, so its cache
+# age travels with it everywhere it is shown.
+
+# Usage-cache path for a profile dir. The default profile (~/.claude,
+# or CLAUDE_CONFIG_DIR unset) uses the suffixless cache; everything
+# else mirrors the CACHE_SUFFIX derivation below.
+claudefuel_cache_path_for_dir() {
+    local dir="$1"
+    if [ -z "$dir" ] || [ "$dir" = "$HOME/.claude" ]; then
+        printf '/tmp/claude/statusline-usage-cache.json'
+    else
+        local h
+        h=$(echo -n "$dir" | shasum -a 256 | cut -c1-8)
+        printf '/tmp/claude/statusline-usage-cache-%s.json' "$h"
+    fi
+}
+
+# Compact age: 45s / 12m / 3h. Sibling numbers are cached, never live —
+# the age is the honesty marker that says how old the snapshot is.
+claudefuel_format_age() {
+    local s=$1
+    if [ "$s" -lt 60 ]; then printf '%ds' "$s"
+    elif [ "$s" -lt 3600 ]; then printf '%dm' $(( s / 60 ))
+    else printf '%dh' $(( s / 3600 ))
+    fi
+}
+
+# Enumerate known profile caches: the default profile (~/.claude), every
+# ~/.claude-* sibling, and the active CLAUDE_CONFIG_DIR when it lives
+# outside that convention. Profile labels derive the same way as the
+# [profile] segment on Line 1 (basename minus the .claude- prefix).
+# Emits one line per cache found: <label>\t<cache_file>\t<age_seconds>
+claudefuel_known_profile_caches() {
+    local now seen="" dir label cache mtime age
+    now=$(date +%s)
+    set +f  # sibling scan needs globbing; restored immediately
+    local dirs=( "$HOME/.claude" "$HOME"/.claude-* )
+    set -f
+    [ -n "$CLAUDE_CONFIG_DIR" ] && dirs+=( "$CLAUDE_CONFIG_DIR" )
+    for dir in "${dirs[@]}"; do
+        [ -d "$dir" ] || continue
+        cache=$(claudefuel_cache_path_for_dir "$dir")
+        case "$seen" in *"|$cache|"*) continue ;; esac
+        seen+="|$cache|"
+        [ -f "$cache" ] || continue
+        if [ "$dir" = "$HOME/.claude" ]; then
+            label="default"
+        else
+            label=$(basename "$dir" | sed 's/^\.claude-//')
+        fi
+        mtime=$(stat -c %Y "$cache" 2>/dev/null || stat -f %m "$cache" 2>/dev/null)
+        age=$(( now - ${mtime:-$now} ))
+        printf '%s\t%s\t%s\n' "$label" "$cache" "$age"
+    done
+}
+
+# Cross-profile switch hint — `⇄ <profile> <pct>% (<age>)` appended to
+# Line 2 only when the active profile runs hot and a sibling profile's
+# on-disk cache shows meaningfully more headroom. Severity-gated:
+# dormant in every nominal state. Three gates:
+#   1. active governing pct (max of 5h/7d) >= 80
+#   2. sibling cache fresher than 6h — a 5h-window number older than
+#      its own window says nothing about the sibling's current state
+#   3. best sibling governing pct <= active - 20 (meaningful headroom)
+# Usage: claudefuel_switch_hint <active_governing_pct> <active_cache_file>
+claudefuel_switch_hint() {
+    local active_pct=$1 active_cache=$2
+    [ "$active_pct" -ge 80 ] 2>/dev/null || return 0
+
+    local label cache age sib_pct
+    local best_label="" best_pct=101 best_age=0
+    while IFS=$'\t' read -r label cache age; do
+        [ "$cache" = "$active_cache" ] && continue
+        [ "$age" -lt $((6 * 3600)) ] || continue
+        sib_pct=$(jq -r '[(.five_hour.utilization // 0), (.seven_day.utilization // 0)] | max' \
+            "$cache" 2>/dev/null | awk '{printf "%.0f", $1}')
+        [ -n "$sib_pct" ] || continue
+        if [ "$sib_pct" -lt "$best_pct" ]; then
+            best_pct=$sib_pct best_label=$label best_age=$age
+        fi
+    done < <(claudefuel_known_profile_caches)
+
+    [ -n "$best_label" ] || return 0
+    [ "$best_pct" -le $(( active_pct - 20 )) ] || return 0
+
+    printf "⇄ %s %s%% (%s)" "$best_label" "$best_pct" "$(claudefuel_format_age "$best_age")"
+}
+
+# ===== Fleet mode: machine-readable dump of every known profile cache =====
+# `statusline.sh --fleet` emits one JSON object per known profile cache
+# and exits — the data surface for the /claudefuel.fleet skill. Strictly
+# read-only: renders only what's already on disk, never fetches, and
+# always carries cache_age_seconds so the renderer can show staleness.
+if [ "$1" = "--fleet" ]; then
+    while IFS=$'\t' read -r label cache age; do
+        # Join the profile's prepaid cache when present (same suffix).
+        suffix="${cache#/tmp/claude/statusline-usage-cache}"
+        suffix="${suffix%.json}"
+        prepaid_file="/tmp/claude/statusline-prepaid-cache${suffix}.json"
+        prepaid_json="null"
+        if [ -f "$prepaid_file" ]; then
+            prepaid_json=$(jq -c '{amount: (.amount // null), currency: (.currency // null)}' \
+                "$prepaid_file" 2>/dev/null)
+            [ -n "$prepaid_json" ] || prepaid_json="null"
+        fi
+        jq -c --arg profile "$label" --argjson age "$age" --argjson prepaid "$prepaid_json" \
+            '{profile: $profile, cache_age_seconds: $age,
+              five_hour: (.five_hour // null), seven_day: (.seven_day // null),
+              extra_usage: (.extra_usage // null), prepaid: $prepaid}' \
+            "$cache" 2>/dev/null
+    done < <(claudefuel_known_profile_caches)
+    exit 0
+fi
 
 input=$(cat)
 
@@ -662,6 +782,13 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     # Assemble line 2: bars row
     line2="${col1_bar}${sep}${col2_bar}"
     [ -n "$col3_bar" ] && line2+="${sep}${col3_bar}"
+
+    # Cross-profile switch hint — sibling headroom when running hot.
+    # Reads sibling on-disk caches only; see claudefuel_switch_hint.
+    governing_pct=$five_hour_pct
+    [ "$seven_day_pct" -gt "$governing_pct" ] 2>/dev/null && governing_pct=$seven_day_pct
+    switch_hint=$(claudefuel_switch_hint "$governing_pct" "$cache_file")
+    [ -n "$switch_hint" ] && line2+="${sep}${yellow}${switch_hint}${reset}"
 
     # Assemble line 3: resets row
     line3="${col1_reset}${sep}${col2_reset}"

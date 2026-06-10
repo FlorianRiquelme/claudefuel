@@ -59,9 +59,21 @@ ln -sf ~/.claude/statusline.sh ~/.claude-oss/statusline.sh
 
 A bundled installer for two profiles ships in this repo if you don't yet have one — see [Optional: bundled installer for two profiles](#optional-bundled-installer-for-two-profiles) below.
 
+### See the spare tank
+
+When the active profile is running hot (≥80% on its governing window) and another profile's cached usage shows meaningfully more headroom, a switch hint appears at the end of line 2:
+
+```
+5h: ●●●●●●●●○○ 85% | 7d: ●●●○○○○○○○ 30% | ⇄ work 12% (2m)
+```
+
+Read it as: "the `work` profile was at 12% as of 2 minutes ago — consider switching." The hint is read-only and conservative: it only reads the per-profile caches other renders already left on disk (it never fetches usage for an inactive profile), the cache age in parentheses always travels with the number, and snapshots older than 6 hours are ignored. Dormant in every nominal state.
+
+For the full picture across all profiles, run `/claudefuel.fleet` — it renders a table of every known profile's cached 5h/7d usage, reset time, prepaid balance, and data age. Same rule applies: cached snapshots only, each row labeled with its age.
+
 ## Daily use
 
-Once installed, five slash commands are available in any Claude Code session:
+Once installed, these slash commands are available in any Claude Code session:
 
 | Command | What it does |
 |---|---|
@@ -70,6 +82,7 @@ Once installed, five slash commands are available in any Claude Code session:
 | `/claudefuel.rollback` | Restore the most recent `*.bak-<timestamp>` written by a previous install. Shows the diff and asks before restoring. |
 | `/claudefuel.uninstall` | Remove the install bundle cleanly. Asks separately about backups and your `claudefuel.json`. |
 | `/claudefuel.configure` | **Placeholder** — the name is reserved as part of the stability contract but config keys (color thresholds, segment ordering, theme presets) aren't wired into the bar yet. |
+| `/claudefuel.fleet` | Fleet view for multi-profile setups: a table of every known profile's cached 5h/7d usage, reset time, balance, and data age. Read-only — shows what's already cached, never fetches for inactive profiles. |
 
 ## Why a paste-line, not a plugin?
 
