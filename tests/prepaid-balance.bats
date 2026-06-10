@@ -7,9 +7,11 @@
 # the network, feed stdin, assert on stdout.
 #
 # Behavior under test:
-#   - When extra_usage.is_enabled=true AND prepaid cache is present,
-#     render `extra: <symbol><amount>` using the API `currency` field.
+#   - When extra_usage.is_enabled=true AND spend is live (used_credits>0)
+#     AND prepaid cache is present, render `extra: <symbol><amount>`
+#     using the API `currency` field.
 #   - When extra_usage.is_enabled=false, omit the column entirely.
+#   - When spend is $0, omit the column (calm-cockpit visibility gate).
 #   - Currency symbol mapping: EUR→€, GBP→£, JPY→¥, anything else→$.
 
 SAMPLE_STDIN='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"},"session_id":"t"}'
@@ -40,14 +42,17 @@ teardown() {
 }
 
 # Seed usage cache with extra_usage enabled or disabled.
-# Args: <extra_enabled: true|false>
+# used_credits defaults to a live spend so the calm-cockpit gate
+# (column hidden until spend > $0) lets the column render.
+# Args: <extra_enabled: true|false> [<used_credits>=350]
 seed_usage_cache() {
   local enabled=$1
+  local used_credits=${2:-350}
   cat > "$USAGE_CACHE" <<EOF
 {
   "five_hour":   { "utilization": 5, "resets_at": "2099-01-01T00:00:00Z" },
   "seven_day":   { "utilization": 5, "resets_at": "2099-01-01T00:00:00Z" },
-  "extra_usage": { "is_enabled": $enabled }
+  "extra_usage": { "is_enabled": $enabled, "used_credits": $used_credits }
 }
 EOF
   touch "$USAGE_CACHE"
@@ -125,6 +130,16 @@ run_bar() {
 @test "extra_usage disabled: column is omitted entirely" {
   seed_usage_cache false
   # Even with prepaid cached, the column must not render when disabled.
+  seed_prepaid_cache 5929 EUR
+
+  output=$(run_bar)
+  line2=$(printf '%s' "$output" | sed -n '2p')
+
+  [[ "$line2" != *"extra:"* ]]
+}
+
+@test "spend at \$0: column is omitted until spend is live (calm-cockpit gate)" {
+  seed_usage_cache true 0
   seed_prepaid_cache 5929 EUR
 
   output=$(run_bar)

@@ -24,11 +24,21 @@ Or `/claudefuel.uninstall` from inside a Claude Code session.
 
 ## What you get
 
-- **Line 1:** model · `ctx` bar with `<used>/<total>` tokens · thinking on/off · effort level (when the model supports it). When a newer release is available, an `↗ /claudefuel.update` segment appears here as a one-glyph drift signal.
-- **Line 2:** `5h` / `7d` / `extra` usage progress bars (matches the `.five_hour` / `.seven_day` / `.extra_usage` fields the API returns)
+- **Line 1:** model · `ctx` bar with `<used>/<total>` tokens · thinking on/off · effort level (when the model supports it). When a newer release is available, an `↗ /claudefuel.update` segment appears here as a one-glyph drift signal — faint for a patch-level bump, yellow for minor/major.
+- **Line 2:** `5h` / `7d` / `extra` usage progress bars (matches the `.five_hour` / `.seven_day` / `.extra_usage` fields the API returns). The `extra` column shows your prepaid credit balance, and only appears once spend is live (> $0 this month). A `▸` marker flags the governing constraint — whichever window would hit 100% first at your current pace (dive-computer style: the column is marked, never reordered). At ≥ 90% a column escalates with shape and weight, not hue alone: `⚠` label prefix and inverse-video percentage.
 - **Line 3:** `↻` reset times for each window. When you're burning through the 5-hour window faster than reset-pace, a `~cap HH:MM-HH:MM` segment appears next to the 5h reset — a rough estimate of when you'll hit 100% at the current pace. Dormant when healthy; the tilde and range signal it's a prediction, not a precise time.
 - Cross-platform: macOS Keychain, Linux credentials file / GNOME Keyring
-- Color-coded: green → orange → yellow → red as you burn through limits
+- Color-coded: green → orange → yellow → red as you burn through limits — with the shape/weight escalations above so severity never rides on hue alone
+
+### The calm cockpit
+
+Lines 2–3 only render when there's something worth watching — the bar physically growing is the alarm. When everything is **nominal**, the bar collapses to Line 1 alone. Nominal means all of:
+
+- the 5-hour **and** 7-day windows are below 50% (the first alarm threshold),
+- no window is projected to hit 100% before its own reset at your current pace (so no `▸` and no `~cap`),
+- no live extra spend to report (extra column hidden at $0 or when extra usage is off).
+
+Cross any of those gates and lines 2–3 reappear in their usual stable layout.
 
 ## Works with multiple Claude Code accounts
 

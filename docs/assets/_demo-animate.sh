@@ -53,6 +53,9 @@ emit_bar() {
 # The first frame stays under the cap-ETA noise gate (pct_used < 10), so
 # the 5h reset cell shows the dormant baseline. From frame 2 onward the
 # tracer kicks in and the `~cap` range tightens as burn accelerates.
+# Calm cockpit: early frames where both windows are nominal (and no cap
+# projects) collapse to Line 1 only — the bar growing back IS the alarm.
+# The final frame (96/94) escalates with ▸ and ⚠ + inverse-video pct.
 frames=(
   "8000    6   18   200"
   "55000   28  35   900"
