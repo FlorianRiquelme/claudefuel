@@ -25,8 +25,9 @@ Or `/claudefuel.uninstall` from inside a Claude Code session.
 ## What you get
 
 - **Line 1:** model · `ctx` bar with `<used>/<total>` tokens · thinking on/off · effort level (when the model supports it). When a newer release is available, an `↗ /claudefuel.update` segment appears here as a one-glyph drift signal.
-- **Line 2:** `5h` / `7d` / `extra` usage progress bars (matches the `.five_hour` / `.seven_day` / `.extra_usage` fields the API returns)
-- **Line 3:** `↻` reset times for each window. When you're burning through the 5-hour window faster than reset-pace, a `~cap HH:MM-HH:MM` segment appears next to the 5h reset — a rough estimate of when you'll hit 100% at the current pace. Dormant when healthy; the tilde and range signal it's a prediction, not a precise time.
+- **Line 2:** `5h` / `7d` / `extra` usage progress bars (matches the `.five_hour` / `.seven_day` / `.extra_usage` fields the API returns). While you're burning the 5-hour window faster than reset-pace, the 5h percent gives way to a burn chip — `~1h38m ×1.4`: time left at the current pace, and that pace as a multiple of the rate that would just last until reset. Dormant at ×1.0 or below (the bar fill still carries the percent).
+- **Line 3:** `↻` reset times for each window. When you're burning through the 5-hour window faster than reset-pace, a `~cap HH:MM-HH:MM` segment appears next to the 5h reset — a rough estimate of when you'll hit 100% at the current pace, with a range that scales with the horizon (±15% of the time to cap, never tighter than ±5min). Two companions ride along: `slow ≤0.6×` — the pace to drop to so the remaining budget lasts until reset — and `⚓ 1h21m` — the dead time you'd sit locked out between the projected cap and the reset (hidden when under 5 minutes). Dormant when healthy; the tilde and range signal it's a prediction, not a precise time.
+- Prefer a countdown over the wall clock for the 5-hour reset? Set `CLAUDEFUEL_RESET_COUNTDOWN=1` in your environment and Line 3 renders `↻ in 2h59m` instead. The clock stays the default.
 - Cross-platform: macOS Keychain, Linux credentials file / GNOME Keyring
 - Color-coded: green → orange → yellow → red as you burn through limits
 
