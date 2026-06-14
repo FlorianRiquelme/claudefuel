@@ -1,0 +1,453 @@
+#!/usr/bin/env bash
+# claudefuel: v0.5.0
+# Forward-reconcile a claudefuel install to upstream desired state.
+# Recovery scope: bundle files (statusline.sh, the five commands/claudefuel.*.md,
+# cache/, the local claudefuel binary) and the .statusLine key in settings.json.
+# Nothing else.
+
+set -euo pipefail
+
+VERSION="0.5.0"
+REPO="FlorianRiquelme/claudefuel"
+SKILLS=(update doctor rollback uninstall configure)
+TARGET_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+
+# Overridable for tests.
+API_BASE="${CLAUDEFUEL_API_BASE:-https://api.github.com}"
+RAW_BASE="${CLAUDEFUEL_RAW_BASE:-https://raw.githubusercontent.com}"
+
+# Shared curl hardening: connect/total timeouts so a stalled network can't hang
+# the update, and HTTPS-only (incl. redirects) so a tag can't downgrade transport.
+CURL_OPTS=(--max-time 30 --connect-timeout 10 --proto '=https' --proto-redir '=https' --max-redirs 5)
+
+usage() {
+  cat <<EOF
+claudefuel v${VERSION}
+
+Usage:
+  claudefuel update     Reconcile to latest released bundle
+  claudefuel inspect    Read-only report of current install state
+  claudefuel --version  Print version
+
+Target dir: $TARGET_DIR
+EOF
+}
+
+# ── inspect_state ─────────────────────────────────────────────────────────────
+# Prints a JSON snapshot of the current install. Pure read; no network.
+inspect_state() {
+  local sl="$TARGET_DIR/statusline.sh"
+  local self="$TARGET_DIR/claudefuel"
+  local sj="$TARGET_DIR/settings.json"
+  local sl_present=false sl_exec=false sl_ver=""
+  local self_present=false self_exec=false self_ver=""
+  local sj_present=false sj_valid=false sj_statusline="null"
+  local cache_present=false
+  local cmds_json="{}"
+
+  if [ -f "$sl" ]; then
+    sl_present=true
+    [ -x "$sl" ] && sl_exec=true
+    sl_ver=$(head -20 "$sl" 2>/dev/null | grep -E '^# claudefuel: v' | head -n1 \
+      | sed -E 's/^# claudefuel: v//' || true)
+  fi
+  if [ -f "$self" ]; then
+    self_present=true
+    [ -x "$self" ] && self_exec=true
+    self_ver=$(head -20 "$self" 2>/dev/null | grep -E '^# claudefuel: v' | head -n1 \
+      | sed -E 's/^# claudefuel: v//' || true)
+  fi
+  if [ -f "$sj" ]; then
+    sj_present=true
+    if jq empty "$sj" >/dev/null 2>&1; then
+      sj_valid=true
+      sj_statusline=$(jq -c '.statusLine // null' "$sj")
+    fi
+  fi
+  [ -d "$TARGET_DIR/cache" ] && cache_present=true
+
+  cmds_json="{"
+  local first=1
+  for s in "${SKILLS[@]}"; do
+    local f="$TARGET_DIR/commands/claudefuel.${s}.md"
+    local pres=false ver=""
+    if [ -f "$f" ]; then
+      pres=true
+      ver=$(head -20 "$f" 2>/dev/null | grep -E '^# claudefuel-skill: v' | head -n1 \
+        | sed -E 's/^# claudefuel-skill: v//' || true)
+    fi
+    [ $first -eq 1 ] || cmds_json+=","
+    first=0
+    cmds_json+=$(printf '"%s":{"present":%s,"version":"%s"}' "$s" "$pres" "$ver")
+  done
+  cmds_json+="}"
+
+  jq -n \
+    --arg target_dir "$TARGET_DIR" \
+    --argjson statusline "$(jq -n --arg v "$sl_ver" --argjson p "$sl_present" --argjson x "$sl_exec" \
+        '{present:$p, executable:$x, version:$v}')" \
+    --argjson claudefuel_bin "$(jq -n --arg v "$self_ver" --argjson p "$self_present" --argjson x "$self_exec" \
+        '{present:$p, executable:$x, version:$v}')" \
+    --argjson settings "$(jq -n --argjson p "$sj_present" --argjson v "$sj_valid" --argjson s "$sj_statusline" \
+        '{present:$p, valid_json:$v, status_line:$s}')" \
+    --argjson cache "$(jq -n --argjson p "$cache_present" '{present:$p}')" \
+    --argjson commands "$cmds_json" \
+    '{target_dir:$target_dir, statusline:$statusline, claudefuel_bin:$claudefuel_bin,
+      settings_json:$settings, cache:$cache, commands:$commands}'
+}
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+log_err() { printf '%s\n' "$*" >&2; }
+
+# Fail fast if a hard dependency is missing, before any network or JSON work.
+# This also guards dump_diagnostic itself, which needs jq to write the diagnostic.
+require_deps() {
+  local missing=()
+  command -v jq >/dev/null 2>&1 || missing+=(jq)
+  command -v curl >/dev/null 2>&1 || missing+=(curl)
+  if [ "${#missing[@]}" -gt 0 ]; then
+    log_err "claudefuel: missing required dependency: ${missing[*]} (install and retry)"
+    exit 1
+  fi
+}
+
+# Reject tag names that aren't safe to interpolate into URLs.
+validate_tag() {
+  local t="$1"
+  [[ "$t" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+}
+
+dump_diagnostic() {
+  local step="$1" reason="$2" ts="${3:-}" tag="${4:-}"
+  local cache_dir="$TARGET_DIR/cache"
+  mkdir -p "$cache_dir" 2>/dev/null || true
+  local out="$cache_dir/claudefuel-update-diagnostic.json"
+  local state
+  state=$(inspect_state 2>/dev/null || echo '{}')
+  local baks=()
+  if [ -n "$ts" ]; then
+    while IFS= read -r -d '' f; do baks+=("$f"); done < <(find "$TARGET_DIR" -maxdepth 3 -name "*.bak-$ts" -print0 2>/dev/null || true)
+  fi
+  local baks_json
+  baks_json=$(printf '%s\n' "${baks[@]:-}" | jq -R . | jq -s 'map(select(length>0))')
+
+  # Resolved target version (without leading v); "<unresolved>" when the failure
+  # happened before a tag was resolved.
+  local tag_v="${tag#v}"
+  [ -n "$tag_v" ] || tag_v="<unresolved>"
+
+  # Bundle file set, derived from SKILLS so adding a skill updates this automatically.
+  local bundle_files=("statusline.sh")
+  local s
+  for s in "${SKILLS[@]}"; do bundle_files+=("commands/claudefuel.${s}.md"); done
+  bundle_files+=("claudefuel")
+  local bundle_json
+  bundle_json=$(printf '%s\n' "${bundle_files[@]}" | jq -R . | jq -s .)
+
+  jq -n \
+    --arg step "$step" \
+    --arg reason "$reason" \
+    --arg target_dir "$TARGET_DIR" \
+    --arg ts "$ts" \
+    --arg tag_v "$tag_v" \
+    --argjson bundle "$bundle_json" \
+    --argjson current "$state" \
+    --argjson baks "$baks_json" \
+    --arg ccd "${CLAUDE_CONFIG_DIR:-}" \
+    --arg jq_v "$(jq --version 2>/dev/null || echo unknown)" \
+    --arg curl_v "$(curl --version 2>/dev/null | head -n1 || echo unknown)" \
+    --arg platform "$(uname -s)" \
+    --arg shell "${SHELL:-}" \
+    '{
+      step: $step,
+      exit_reason: $reason,
+      target_dir: $target_dir,
+      backup_timestamp: $ts,
+      available_backups: $baks,
+      current_state: $current,
+      desired_state: {
+        statusline_version: $tag_v,
+        skill_version: $tag_v,
+        bundle_files: $bundle,
+        settings_status_line: {type:"command", command:"<target_dir>/statusline.sh"},
+        scope_note: "bundle files (statusline.sh, the five commands/claudefuel.*.md, cache/, the local claudefuel binary) and the .statusLine key in settings.json. Nothing else."
+      },
+      env: {
+        CLAUDE_CONFIG_DIR: $ccd,
+        jq: $jq_v,
+        curl: $curl_v,
+        platform: $platform,
+        shell: $shell
+      }
+    }' >"$out"
+  log_err "claudefuel: $step failed — $reason"
+  log_err "diagnostic written to: $out"
+}
+
+prune_baks() {
+  # Keep the three most-recent bak sets (group by <TS>).
+  local timestamps
+  timestamps=$(find "$TARGET_DIR" -maxdepth 3 -name "*.bak-*" 2>/dev/null \
+    | sed -E 's/.*\.bak-([0-9]+)$/\1/' | sort -u -r)
+  [ -z "$timestamps" ] && return 0
+  local keep=()
+  local i=0
+  while IFS= read -r ts; do
+    [ -z "$ts" ] && continue
+    if [ $i -lt 3 ]; then
+      keep+=("$ts")
+    else
+      find "$TARGET_DIR" -maxdepth 3 -name "*.bak-$ts" -delete 2>/dev/null || true
+    fi
+    i=$((i+1))
+  done <<<"$timestamps"
+}
+
+# Fetch latest tag from GitHub releases API.
+fetch_latest_tag() {
+  curl "${CURL_OPTS[@]}" -fsSL "$API_BASE/repos/$REPO/releases/latest" 2>/dev/null \
+    | jq -r '.tag_name // empty'
+}
+
+# Fetch release body for a tag; on failure print placeholder.
+fetch_release_body() {
+  local tag="$1"
+  local body
+  body=$(curl "${CURL_OPTS[@]}" -fsSL "$API_BASE/repos/$REPO/releases/tags/$tag" 2>/dev/null \
+    | jq -r '.body // empty' || true)
+  if [ -z "$body" ]; then
+    printf '[notes unavailable for %s]\n' "$tag"
+  else
+    printf '%s\n' "$body"
+  fi
+}
+
+# List tags strictly greater than $installed and <= $latest, sorted ascending.
+fetch_interstitial_tags() {
+  local installed="${1#v}" latest="${2#v}"
+  local tags
+  tags=$(curl "${CURL_OPTS[@]}" -fsSL "$API_BASE/repos/$REPO/releases?per_page=100" 2>/dev/null \
+    | jq -r '.[].tag_name' 2>/dev/null | sed 's/^v//' || true)
+  if [ -z "$tags" ]; then printf 'v%s\n' "$latest"; return 0; fi
+  printf '%s\n' "$tags" | sort -V | while IFS= read -r t; do
+    [ -z "$t" ] && continue
+    # keep t where installed < t <= latest
+    if [ -n "$installed" ]; then
+      [ "$(printf '%s\n%s\n' "$installed" "$t" | sort -V | tail -n1)" = "$t" ] || continue
+      [ "$t" = "$installed" ] && continue
+    fi
+    [ "$(printf '%s\n%s\n' "$t" "$latest" | sort -V | tail -n1)" = "$latest" ] || continue
+    printf 'v%s\n' "$t"
+  done
+}
+
+# Atomic file replace via mktemp + mv. $1 url, $2 dest, $3 header_regex (optional verify).
+# The temp file is created in the destination directory so mv is always a
+# same-filesystem rename (truly atomic), never a cross-device copy+unlink.
+fetch_and_install() {
+  local url="$1" dest="$2" header="${3:-}"
+  local dest_dir tmp
+  dest_dir=$(dirname "$dest")
+  mkdir -p "$dest_dir"
+  tmp=$(mktemp "$dest_dir/.claudefuel.XXXXXX") || return 1
+  if ! curl "${CURL_OPTS[@]}" -fsSL "$url" -o "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if [ -n "$header" ]; then
+    if ! head -20 "$tmp" | grep -qE "$header"; then
+      rm -f "$tmp"
+      return 2
+    fi
+  fi
+  mv "$tmp" "$dest"
+}
+
+# ── update flow ──────────────────────────────────────────────────────────────
+cmd_update() {
+  # 1. inspect
+  local state installed_sl
+  state=$(inspect_state)
+  installed_sl=$(printf '%s' "$state" | jq -r '.statusline.version // ""')
+
+  # 2. resolve latest
+  local latest
+  latest=$(fetch_latest_tag) || true
+  if [ -z "$latest" ] || ! validate_tag "$latest"; then
+    dump_diagnostic "resolve_latest_tag" "could not resolve latest release tag from GitHub"
+    exit 1
+  fi
+  local latest_v="${latest#v}"
+
+  # Determine state class.
+  local incomplete=()
+  printf '%s' "$state" | jq -r '.statusline.present' | grep -q true || incomplete+=("statusline.sh missing")
+  printf '%s' "$state" | jq -r '.claudefuel_bin.present' | grep -q true || incomplete+=("claudefuel binary missing")
+  printf '%s' "$state" | jq -r '.cache.present' | grep -q true || incomplete+=("cache/ missing")
+  printf '%s' "$state" | jq -r '.settings_json.valid_json' | grep -q true || incomplete+=("settings.json invalid or missing")
+  printf '%s' "$state" | jq -e '.settings_json.status_line.command' >/dev/null 2>&1 || incomplete+=(".statusLine.command not set")
+  for s in "${SKILLS[@]}"; do
+    printf '%s' "$state" | jq -e --arg s "$s" '.commands[$s].present' | grep -q true || incomplete+=("commands/claudefuel.${s}.md missing")
+  done
+
+  if [ "$installed_sl" = "$latest_v" ]; then
+    if [ "${#incomplete[@]}" -eq 0 ]; then
+      printf 'v%s — current.\n' "$latest_v"
+      return 0
+    fi
+    printf 'v%s — current, but bundle is incomplete:\n' "$latest_v"
+    for it in "${incomplete[@]}"; do printf '  - %s\n' "$it"; done
+    printf 'Repair? [y/N] '
+    local ans
+    read -r ans || ans=""
+    [[ "$ans" =~ ^[Yy]$ ]] || { printf 'Aborted.\n'; return 0; }
+  elif [ -n "$installed_sl" ] && \
+       [ "$(printf '%s\n%s\n' "$installed_sl" "$latest_v" | sort -V | tail -n1)" = "$installed_sl" ]; then
+    # Installed is newer than the latest release: a local pre-release build,
+    # not a downgrade candidate. Informational outcome, not a failure.
+    printf 'v%s — installed is newer than the latest release (v%s). Not downgrading.\n' "$installed_sl" "$latest_v"
+    printf 'To resume tracking releases, set the "# claudefuel: v%s" header in statusline.sh to match.\n' "$latest_v"
+    return 0
+  else
+    # Upgrade (or fresh) case — show release bodies for installed→latest interstitials.
+    if [ -n "$installed_sl" ]; then
+      printf 'v%s → v%s\n\n' "$installed_sl" "$latest_v"
+    else
+      printf '(not installed) → v%s\n\n' "$latest_v"
+    fi
+    local tags
+    tags=$(fetch_interstitial_tags "$installed_sl" "$latest")
+    if [ -z "$tags" ]; then tags="$latest"; fi
+    while IFS= read -r tag; do
+      [ -z "$tag" ] && continue
+      # Tags from the releases list are untrusted input; never interpolate one
+      # into a fetch URL unless it passes the same validation as $latest.
+      validate_tag "$tag" || continue
+      printf '── %s ──\n' "$tag"
+      fetch_release_body "$tag"
+      printf '\n'
+    done <<<"$tags"
+    printf 'Updating: claudefuel, statusline.sh, 5 command files, settings.json (.statusLine only)\n'
+    printf 'Apply? [y/N] '
+    local ans
+    read -r ans || ans=""
+    [[ "$ans" =~ ^[Yy]$ ]] || { printf 'Aborted.\n'; return 0; }
+  fi
+
+  # ── Apply ──
+  local TS
+  TS=$(date -u +%Y%m%d%H%M%S)
+
+  # Back up existing files.
+  local files=(
+    "$TARGET_DIR/statusline.sh"
+    "$TARGET_DIR/claudefuel"
+    "$TARGET_DIR/settings.json"
+  )
+  for s in "${SKILLS[@]}"; do files+=("$TARGET_DIR/commands/claudefuel.${s}.md"); done
+  for f in "${files[@]}"; do
+    [ -f "$f" ] && cp -p "$f" "$f.bak-$TS"
+  done
+
+  # Fetch statusline.sh
+  local raw_root="$RAW_BASE/$REPO/refs/tags/$latest"
+  mkdir -p "$TARGET_DIR/commands" "$TARGET_DIR/cache"
+
+  if ! fetch_and_install "$raw_root/statusline.sh" "$TARGET_DIR/statusline.sh" '^# claudefuel: v'; then
+    dump_diagnostic "fetch_statusline" "could not fetch or verify statusline.sh at $latest" "$TS" "$latest"
+    exit 1
+  fi
+  chmod 700 "$TARGET_DIR/statusline.sh"
+
+  # Command files.
+  for s in "${SKILLS[@]}"; do
+    if ! fetch_and_install "$raw_root/commands/claudefuel.${s}.md" \
+        "$TARGET_DIR/commands/claudefuel.${s}.md" '^# claudefuel-skill: v'; then
+      dump_diagnostic "fetch_command_${s}" "could not fetch or verify commands/claudefuel.${s}.md at $latest" "$TS" "$latest"
+      exit 1
+    fi
+  done
+
+  # claudefuel itself.
+  if ! fetch_and_install "$raw_root/claudefuel" "$TARGET_DIR/claudefuel" '^# claudefuel: v'; then
+    dump_diagnostic "fetch_claudefuel" "could not fetch or verify claudefuel binary at $latest" "$TS" "$latest"
+    exit 1
+  fi
+  chmod 700 "$TARGET_DIR/claudefuel"
+
+  # Patch settings.json — only .statusLine.
+  local sj="$TARGET_DIR/settings.json"
+  if [ ! -f "$sj" ]; then echo '{}' >"$sj"; fi
+  if ! jq empty "$sj" >/dev/null 2>&1; then
+    dump_diagnostic "patch_settings_json" "settings.json is not valid JSON" "$TS" "$latest"
+    exit 1
+  fi
+  local sl_path="$TARGET_DIR/statusline.sh"
+  local sj_tmp
+  if ! sj_tmp=$(mktemp "$(dirname "$sj")/.claudefuel.sj.XXXXXX"); then
+    dump_diagnostic "patch_settings_json" "could not create temp file for settings.json patch" "$TS" "$latest"
+    exit 1
+  fi
+  if ! jq --arg cmd "$sl_path" '.statusLine = {type:"command", command:$cmd}' "$sj" >"$sj_tmp"; then
+    rm -f "$sj_tmp"
+    dump_diagnostic "patch_settings_json" "jq failed to patch .statusLine" "$TS" "$latest"
+    exit 1
+  fi
+  mv "$sj_tmp" "$sj"
+
+  prune_baks
+  printf 'Done. (rollback: /claudefuel.rollback)\n'
+}
+
+# ── inspect command ──────────────────────────────────────────────────────────
+# Render a human pass/fail health report from inspect_state's JSON ($1).
+render_health() {
+  printf '%s' "$1" | jq -r '
+    def mark(c): if c then "✓" else "✗" end;
+    (.statusline.present and .statusline.executable and (.statusline.version != "")) as $sl |
+    (.claudefuel_bin.present and .claudefuel_bin.executable and (.claudefuel_bin.version != "")) as $bin |
+    (.settings_json.valid_json and (.settings_json.status_line != null)) as $sj |
+    .cache.present as $cache |
+    [.commands[] | (.present and (.version != ""))] as $cmds |
+    ([$sl, $bin, $sj, $cache] + $cmds) as $all |
+    "claudefuel health — \(.target_dir)",
+    "",
+    ("\(mark($sl)) statusline.sh" + (if .statusline.present then " — v\(.statusline.version)" + (if .statusline.executable then "" else " (not executable)" end) else " — missing" end)),
+    ("\(mark($bin)) claudefuel binary" + (if .claudefuel_bin.present then " — v\(.claudefuel_bin.version)" + (if .claudefuel_bin.executable then "" else " (not executable)" end) else " — missing" end)),
+    ("\(mark($sj)) settings.json" + (if .settings_json.valid_json then (if .settings_json.status_line != null then " — valid, .statusLine set" else " — valid, .statusLine NOT set" end) else " — invalid or missing" end)),
+    ("\(mark($cache)) cache/" + (if .cache.present then "" else " — missing" end)),
+    (.commands | to_entries[] | ("\(mark(.value.present and (.value.version != ""))) commands/claudefuel.\(.key).md" + (if .value.present then " — v\(.value.version)" else " — missing" end))),
+    "",
+    "\($all | map(select(.)) | length)/\($all | length) checks passed."
+  '
+}
+
+cmd_inspect() {
+  if [ "${1:-}" = "--json" ]; then
+    inspect_state
+    return 0
+  fi
+  render_health "$(inspect_state)"
+}
+
+# ── dispatch ─────────────────────────────────────────────────────────────────
+main() {
+  if [ $# -eq 0 ]; then
+    usage
+    return 0
+  fi
+  # Metadata commands need no external deps; handle them before the preflight.
+  case "${1:-}" in
+    --version|-v) printf 'v%s\n' "$VERSION"; return 0 ;;
+    -h|--help|help) usage; return 0 ;;
+  esac
+  # Everything below does network and/or JSON work — fail fast if deps are missing.
+  require_deps
+  case "${1:-}" in
+    update)  cmd_update ;;
+    inspect) shift; cmd_inspect "$@" ;;
+    *) usage; return 1 ;;
+  esac
+}
+
+main "$@"

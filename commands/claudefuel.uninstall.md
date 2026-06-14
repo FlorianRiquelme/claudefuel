@@ -10,9 +10,10 @@ Remove every install-managed claudefuel artifact and restore the user's `setting
 Tell the user exactly what will be removed and ask for confirmation. The default scope is the install bundle only:
 
 - `$target_dir/statusline.sh`
+- `$target_dir/claudefuel`
 - The five `$target_dir/commands/claudefuel.<name>.md` files (`<name>` ∈ `update doctor rollback uninstall configure`)
 - The `.statusLine` key in `$target_dir/settings.json` (the rest of the file is preserved)
-- `$target_dir/cache/claudefuel-version.json`
+- `$target_dir/cache/claudefuel-version.json` and `$target_dir/cache/claudefuel-update-diagnostic.json`
 
 Ask separately whether to also delete:
 
@@ -36,10 +37,11 @@ Postcondition: `jq -e 'has("statusLine") | not' "$target_dir/settings.json"` exi
 
 ```bash
 rm -f "$target_dir/statusline.sh"
+rm -f "$target_dir/claudefuel"
 for name in update doctor rollback uninstall configure; do
   rm -f "$target_dir/commands/claudefuel.${name}.md"
 done
-rm -f "$target_dir/cache/claudefuel-version.json"
+rm -f "$target_dir/cache/claudefuel-version.json" "$target_dir/cache/claudefuel-update-diagnostic.json"
 rmdir "$target_dir/cache" 2>/dev/null  # only succeeds if empty
 ```
 
@@ -47,13 +49,14 @@ Do not remove `$target_dir/commands/` itself — other tools share it. `rmdir` w
 
 ## Step 4 — Optional cleanup
 
-If the user confirmed backup cleanup, remove `$target_dir/*.bak-*` matching the install bundle (`statusline.sh.bak-*`, `settings.json.bak-*`, and `commands/claudefuel.*.md.bak-*`).
+If the user confirmed backup cleanup, remove `$target_dir/*.bak-*` matching the install bundle (`statusline.sh.bak-*`, `claudefuel.bak-*`, `settings.json.bak-*`, and `commands/claudefuel.*.md.bak-*`).
 
 If the user confirmed config cleanup, remove `$target_dir/claudefuel.json`.
 
 ## Step 5 — Verify
 
 - `[ ! -e "$target_dir/statusline.sh" ]`
+- `[ ! -e "$target_dir/claudefuel" ]`
 - `jq -e 'has("statusLine") | not' "$target_dir/settings.json"` exits 0
 - None of the five `claudefuel.*.md` files remain in `$target_dir/commands/`
 

@@ -10,8 +10,10 @@ INSTALL_MD="${BATS_TEST_DIRNAME}/../INSTALL.md"
 SKILLS=(update doctor rollback uninstall configure)
 
 @test "INSTALL.md names every shipped /claudefuel.* command file" {
+  # Accepts either an explicit per-file mention or the brace-expansion
+  # form claudefuel.{update,doctor,...}.md used by the desired-state list.
   for s in "${SKILLS[@]}"; do
-    run grep -F "claudefuel.${s}.md" "$INSTALL_MD"
+    run grep -E "claudefuel\.(${s}|\{[^}]*${s}[^}]*\})\.md" "$INSTALL_MD"
     [ "$status" -eq 0 ] || { echo "INSTALL.md does not mention claudefuel.${s}.md"; return 1; }
   done
 }
@@ -26,8 +28,10 @@ SKILLS=(update doctor rollback uninstall configure)
   [ "$status" -eq 0 ]
 }
 
-@test "INSTALL.md specifies reverse-order restore on postcondition failure" {
-  run grep -E -i "reverse" "$INSTALL_MD"
+@test "INSTALL.md documents the diagnostic dump on reconcile failure" {
+  # ADR-0005: the script dumps cache/claudefuel-update-diagnostic.json on
+  # failure and the LLM drives forward from it — no auto-revert.
+  run grep -F "claudefuel-update-diagnostic.json" "$INSTALL_MD"
   [ "$status" -eq 0 ]
 }
 

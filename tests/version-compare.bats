@@ -1,11 +1,10 @@
 #!/usr/bin/env bats
 
-# Tests for the version comparison algorithm used by /claudefuel.update
-# and INSTALL.md Step 2 (see docs/design/upgrade-experience.md).
+# Tests for the three-state version comparison algorithm.
 #
-# The canonical home of compare_versions is the /claudefuel.update skill
-# prose. This fixture mirrors that snippet verbatim so the algorithm
-# is mechanically testable. If you change one, change the other.
+# Since ADR-0005 the /claudefuel.update skill no longer carries this
+# snippet — the fixture in fixtures/compare_versions.sh is the canonical
+# home, kept for the install-step2.bats regression guards.
 
 setup() {
   source "${BATS_TEST_DIRNAME}/fixtures/compare_versions.sh"
@@ -33,14 +32,4 @@ setup() {
   run compare_versions "0.10.0" "0.2.0"
   [ "$status" -eq 0 ]
   [ "$output" = "installed-newer" ]
-}
-
-@test "fixture matches /claudefuel.update skill prose verbatim" {
-  local skill="${BATS_TEST_DIRNAME}/../commands/claudefuel.update.md"
-  local fixture="${BATS_TEST_DIRNAME}/fixtures/compare_versions.sh"
-  local skill_fn fixture_fn
-  skill_fn=$(awk '/^compare_versions\(\) {/,/^}/' "$skill")
-  fixture_fn=$(awk '/^compare_versions\(\) {/,/^}/' "$fixture")
-  [ -n "$skill_fn" ]
-  [ "$skill_fn" = "$fixture_fn" ]
 }

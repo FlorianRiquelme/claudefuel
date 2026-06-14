@@ -1,7 +1,7 @@
 # shellcheck shell=bash
-# Canonical version-comparison algorithm — mirrored verbatim from the
-# /claudefuel.update skill prose (commands/claudefuel.update.md).
-# If you change one, change the other.
+# Canonical three-state version-comparison algorithm.
+# Since ADR-0005 the /claudefuel.update skill no longer carries this snippet —
+# this fixture is the canonical home, kept for the install-step2.bats regression guards.
 
 compare_versions() {
   local installed="$1" spec="$2"

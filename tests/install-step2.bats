@@ -1,13 +1,11 @@
 #!/usr/bin/env bats
 
-# Tests for INSTALL.md Step 2's three-state branching.
-# Step 2 is LLM-executed prose; what we test is the algorithm it must
-# follow:
-#   1. parse spec's `Version:` line from INSTALL.md
-#   2. compare against installed via the same compare_versions algorithm
-#      verified in version-compare.bats
+# Tests for INSTALL.md's version contract. Since ADR-0005 the reconcile
+# mechanics (including version comparison) live in the `claudefuel` script;
+# what INSTALL.md must still provide is a parseable `Version:` line and a
+# Reconcile section that delegates to the script.
 #
-# These tests guard against regression back to the `>= 0.1.0` floor bug.
+# These tests also guard against regression back to the `>= 0.1.0` floor bug.
 
 setup() {
   source "${BATS_TEST_DIRNAME}/fixtures/compare_versions.sh"
@@ -30,8 +28,10 @@ parse_spec_version() {
   [ "$status" -ne 0 ]
 }
 
-@test "Step 2 references the three-state outcomes" {
-  run grep -E "installed-newer|spec-newer" "$INSTALL_MD"
+@test "Reconcile section delegates to the claudefuel script" {
+  # ADR-0005: INSTALL.md no longer carries step-by-step reconcile prose;
+  # it downloads the tagged script and runs `claudefuel update`.
+  run grep -F 'claudefuel" update' "$INSTALL_MD"
   [ "$status" -eq 0 ]
 }
 

@@ -191,7 +191,7 @@ GitHub's Releases API is unreachable (network / rate limit). Re-run the paste li
 **The bar shows usage for the wrong profile.**
 Check `echo $CLAUDE_CONFIG_DIR` in the terminal where the bar is wrong. claudefuel reads that env var to pick a profile. If the variable is unset, it uses `~/.claude/`.
 
-**I edited `statusline.sh` and now `/claudefuel.update` refuses with "installed is newer than spec."**
+**I edited `statusline.sh` and now `/claudefuel.update` refuses with "installed is newer than the latest release."**
 The version-comparison guard is intentionally strict — local edits to the version header are treated as a pre-release build, not a candidate for forward upgrade. To resume tracking releases, edit the `# claudefuel: vX.Y.Z` header in your local copy to match the spec version, then re-run `/claudefuel.update`.
 
 **`/claudefuel.configure` doesn't actually configure anything.**
