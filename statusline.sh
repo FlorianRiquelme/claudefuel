@@ -646,8 +646,9 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     col3_bar=""
     col3_reset=""
     extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')
-    if [ "$extra_enabled" = "true" ] && [ -n "$prepaid_data" ]; then
-        prepaid_amount=$(echo "$prepaid_data" | jq -r '.amount // 0' | awk '{printf "%.2f", $1/100}')
+    prepaid_raw_amount=$(echo "$prepaid_data" | jq -r '.amount // 0')
+    if [ "$extra_enabled" = "true" ] && [ -n "$prepaid_data" ] && awk -v n="$prepaid_raw_amount" 'BEGIN { exit !(n != 0) }'; then
+        prepaid_amount=$(echo "$prepaid_raw_amount" | awk '{printf "%.2f", $1/100}')
         prepaid_currency=$(echo "$prepaid_data" | jq -r '.currency // "USD"')
         case "$prepaid_currency" in
             EUR) sym="€" ;;
