@@ -1,5 +1,5 @@
 #!/bin/bash
-# claudefuel: v0.4.1
+# claudefuel: v0.4.2
 # Claude Code Status Line — Multi-Account Aware
 #
 # Line 1: [profile] Model | ctx <bar> <used>/<total> | thinking: on/off | effort: <level> | ↗ /claudefuel.update
