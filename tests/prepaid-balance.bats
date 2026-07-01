@@ -145,6 +145,16 @@ run_bar() {
   [[ "$line2" != *"extra:"* ]]
 }
 
+@test "zero balance as 0.00: column is omitted entirely" {
+  seed_usage_cache true
+  seed_prepaid_cache 0.00 USD
+
+  output=$(run_bar)
+  line2=$(printf '%s' "$output" | sed -n '2p')
+
+  [[ "$line2" != *"extra:"* ]]
+}
+
 @test "prepaid cache missing: column is omitted even when extra_usage enabled" {
   seed_usage_cache true
   # No prepaid cache seeded. Offline mode prevents the network fallback,
