@@ -7,9 +7,11 @@
 # the network, feed stdin, assert on stdout.
 #
 # Behavior under test:
-#   - When extra_usage.is_enabled=true AND prepaid cache is present,
-#     render `extra: <symbol><amount>` using the API `currency` field.
+#   - When extra_usage.is_enabled=true AND prepaid cache is present AND
+#     the balance is non-zero, render `extra: <symbol><amount>` using the
+#     API `currency` field.
 #   - When extra_usage.is_enabled=false, omit the column entirely.
+#   - When the prepaid balance is zero, omit the column entirely (noise).
 #   - Currency symbol mapping: EUR→€, GBP→£, JPY→¥, anything else→$.
 
 SAMPLE_STDIN='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"},"session_id":"t"}'
@@ -126,6 +128,16 @@ run_bar() {
   seed_usage_cache false
   # Even with prepaid cached, the column must not render when disabled.
   seed_prepaid_cache 5929 EUR
+
+  output=$(run_bar)
+  line2=$(printf '%s' "$output" | sed -n '2p')
+
+  [[ "$line2" != *"extra:"* ]]
+}
+
+@test "zero balance: column is omitted entirely" {
+  seed_usage_cache true
+  seed_prepaid_cache 0 USD
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p')
