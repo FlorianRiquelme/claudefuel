@@ -386,16 +386,24 @@ get_oauth_token() {
 # ===== LINE 2 & 3: Usage limits with progress bars (cached) =====
 # Cache is per-account when CLAUDE_CONFIG_DIR is set
 cache_file="/tmp/claude/statusline-usage-cache${CACHE_SUFFIX}.json"
+# Tracks the last fetch *attempt* (success or failure) — separate from
+# cache_file's mtime, which only moves on success. Without this, a failing
+# fetch (e.g. rate-limited) never ages the cache_file mtime, so cache_age
+# stays >= cache_max_age forever and every subsequent render retries the
+# request with no backoff, which can keep an upstream rate limit alive
+# indefinitely while silently showing stale numbers.
+attempt_file="/tmp/claude/statusline-usage-attempt${CACHE_SUFFIX}"
 cache_max_age=60  # seconds between API calls
 mkdir -p /tmp/claude
 
 needs_refresh=true
 usage_data=""
+cache_mtime=""
+now=$(date +%s)
 
 # Check cache
 if [ -f "$cache_file" ]; then
     cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
-    now=$(date +%s)
     cache_age=$(( now - cache_mtime ))
     if [ "$cache_age" -lt "$cache_max_age" ]; then
         needs_refresh=false
@@ -403,8 +411,18 @@ if [ -f "$cache_file" ]; then
     fi
 fi
 
+# Only attempt a network fetch if we haven't tried recently, regardless of
+# whether that attempt succeeded.
+should_attempt=true
+if [ -f "$attempt_file" ]; then
+    attempt_mtime=$(stat -c %Y "$attempt_file" 2>/dev/null || stat -f %m "$attempt_file" 2>/dev/null)
+    attempt_age=$(( now - attempt_mtime ))
+    [ "$attempt_age" -lt "$cache_max_age" ] && should_attempt=false
+fi
+
 # Fetch fresh data if cache is stale
-if $needs_refresh; then
+if $needs_refresh && $should_attempt; then
+    touch "$attempt_file" 2>/dev/null
     token=$(get_oauth_token)
     if [ -n "$token" ] && [ "$token" != "null" ]; then
         response=$(curl -s --max-time 5 \
@@ -417,11 +435,26 @@ if $needs_refresh; then
         if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
             usage_data="$response"
             echo "$response" > "$cache_file"
+            cache_mtime=$now
         fi
     fi
     # Fall back to stale cache
     if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
         usage_data=$(cat "$cache_file" 2>/dev/null)
+    fi
+fi
+
+# Flag data that's stale well beyond the normal refresh cadence (fetches
+# have been failing) so the display can warn instead of silently showing
+# numbers the user could mistake for current — e.g. thinking they have
+# more budget left than they actually do.
+usage_stale=false
+stale_age_mins=0
+if [ -n "$usage_data" ] && [ -n "$cache_mtime" ]; then
+    data_age=$(( now - cache_mtime ))
+    if [ "$data_age" -ge $(( cache_max_age * 3 )) ]; then
+        usage_stale=true
+        stale_age_mins=$(( data_age / 60 ))
     fi
 fi
 
@@ -663,6 +696,7 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     # Assemble line 2: bars row
     line2="${col1_bar}${sep}${col2_bar}"
     [ -n "$col3_bar" ] && line2+="${sep}${col3_bar}"
+    $usage_stale && line2+="${sep}${red}⚠ stale ${stale_age_mins}m${reset}"
 
     # Assemble line 3: resets row
     line3="${col1_reset}${sep}${col2_reset}"
