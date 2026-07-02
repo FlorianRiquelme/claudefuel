@@ -510,23 +510,43 @@ fi
 # ===== Prepaid credit balance (separate cache, longer TTL) =====
 # Balance changes slowly, so cache for 5 min to avoid hammering the API.
 prepaid_cache_file="/tmp/claude/statusline-prepaid-cache${CACHE_SUFFIX}.json"
+prepaid_attempt_file="/tmp/claude/statusline-prepaid-attempt${CACHE_SUFFIX}"
 prepaid_cache_max_age=300
 prepaid_data=""
 
 if [ -f "$prepaid_cache_file" ]; then
     p_mtime=$(stat -c %Y "$prepaid_cache_file" 2>/dev/null || stat -f %m "$prepaid_cache_file" 2>/dev/null)
-    p_age=$(( $(date +%s) - p_mtime ))
+    p_age=$(( now - p_mtime ))
     if [ "$p_age" -lt "$prepaid_cache_max_age" ]; then
         prepaid_data=$(cat "$prepaid_cache_file" 2>/dev/null)
     fi
 fi
 
-if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ]; then
+# Like the usage fetch, the prepaid fetch must not retry on every render when
+# it fails — otherwise it stampedes api.anthropic.com and keeps the whole
+# account rate-limited (which also 429s the usage endpoint, same host). Gate
+# it on its own attempt marker AND the shared Retry-After cooldown that either
+# fetch may set: a 429 from either endpoint pauses all account API traffic.
+prepaid_should_attempt=true
+if [ -f "$prepaid_attempt_file" ]; then
+    pa_mtime=$(stat -c %Y "$prepaid_attempt_file" 2>/dev/null || stat -f %m "$prepaid_attempt_file" 2>/dev/null)
+    [ $(( now - pa_mtime )) -lt "$prepaid_cache_max_age" ] && prepaid_should_attempt=false
+fi
+if [ -f "$retryafter_file" ]; then
+    prepaid_retry_deadline=$(cat "$retryafter_file" 2>/dev/null)
+    case "$prepaid_retry_deadline" in
+        ''|*[!0-9]*) : ;;
+        *) [ "$now" -lt "$prepaid_retry_deadline" ] && prepaid_should_attempt=false ;;
+    esac
+fi
+
+if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && $prepaid_should_attempt; then
     # Token may be unset if usage cache was fresh — fetch it now
     [ -z "$token" ] || [ "$token" = "null" ] && token=$(get_oauth_token)
 fi
 
-if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && [ -n "$token" ] && [ "$token" != "null" ]; then
+if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && $prepaid_should_attempt && [ -n "$token" ] && [ "$token" != "null" ]; then
+    touch "$prepaid_attempt_file" 2>/dev/null
     # Resolve org UUID — cache long-term, it never changes
     org_cache_file="/tmp/claude/statusline-orguuid-cache${CACHE_SUFFIX}"
     org_uuid=""
@@ -542,15 +562,25 @@ if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && [ -n "$token" ] && 
     fi
 
     if [ -n "$org_uuid" ]; then
-        prepaid_resp=$(curl -s --max-time 5 \
+        p_hdr="/tmp/claude/statusline-prepaid-hdr${CACHE_SUFFIX}.$$"
+        prepaid_resp=$(curl -s -D "$p_hdr" --max-time 5 \
             -H "Authorization: Bearer $token" \
             -H "anthropic-beta: oauth-2025-04-20" \
             -H "User-Agent: claude-code/2.1.34" \
             "https://api.anthropic.com/api/oauth/organizations/$org_uuid/prepaid/credits" 2>/dev/null)
+        p_status=$(awk 'toupper($1) ~ /^HTTP/ {print $2}' "$p_hdr" 2>/dev/null | tail -n1)
         if [ -n "$prepaid_resp" ] && echo "$prepaid_resp" | jq -e '.amount' >/dev/null 2>&1; then
             prepaid_data="$prepaid_resp"
             echo "$prepaid_resp" > "$prepaid_cache_file"
+        elif [ "$p_status" = "429" ]; then
+            # Feed the shared cooldown so the usage fetch backs off too.
+            p_retry=$(grep -i '^retry-after:' "$p_hdr" 2>/dev/null | tr -d '\r' | awk '{print $2}' | tail -n1)
+            case "$p_retry" in
+                ''|*[!0-9]*) p_retry=300 ;;
+            esac
+            echo $(( now + p_retry )) > "$retryafter_file"
         fi
+        rm -f "$p_hdr" 2>/dev/null
     fi
 fi
 
