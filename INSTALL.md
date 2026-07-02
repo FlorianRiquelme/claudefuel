@@ -36,6 +36,7 @@ The install is a **bundle**: every artifact below must be present and valid afte
 4. **File `~/.claude/settings.json`:**
    - Is valid JSON.
    - Contains `.statusLine == { "type": "command", "command": "~/.claude/statusline.sh", "refreshInterval": 2 }`.
+   - Contains `.subagentStatusLine == { "type": "command", "command": "~/.claude/statusline.sh --subagent" }` — the same script renders the per-subagent rows in the agent panel (name in a stable per-task color, status glyph, elapsed, token count). No extra artifact: `--subagent` is a flag-dispatched mode.
    - `refreshInterval` (seconds; Claude Code minimum is 1) re-runs the bar on a timer in addition to event-driven updates, so countdowns and cap-ETA visibly move while the session idles. 2s leaves ~10× headroom over the measured warm render (~180ms), which never waits on the network (cache-first paint; stdin `rate_limits` needs no fetch at all).
    - Every other top-level key that existed before this run **must still exist with the same value**. This is the single most important invariant.
 
@@ -135,11 +136,12 @@ Postcondition: every file that existed pre-install has a matching `*.bak-<TS>`.
 - Capture the list of pre-existing top-level keys: `jq -r 'keys[]' ~/.claude/settings.json | sort > /tmp/keys-before`.
 - Patch atomically:
   ```bash
-  jq '.statusLine = {type: "command", command: "~/.claude/statusline.sh", refreshInterval: 2}' \
+  jq '.statusLine = {type: "command", command: "~/.claude/statusline.sh", refreshInterval: 2}
+      | .subagentStatusLine = {type: "command", command: "~/.claude/statusline.sh --subagent"}' \
      ~/.claude/settings.json > ~/.claude/settings.json.tmp \
      && mv ~/.claude/settings.json.tmp ~/.claude/settings.json
   ```
-- Postcondition A: `jq -e '.statusLine.command == "~/.claude/statusline.sh" and .statusLine.refreshInterval == 2' ~/.claude/settings.json` exits 0.
+- Postcondition A: `jq -e '.statusLine.command == "~/.claude/statusline.sh" and .statusLine.refreshInterval == 2 and .subagentStatusLine.command == "~/.claude/statusline.sh --subagent"' ~/.claude/settings.json` exits 0.
 - Postcondition B: `jq -r 'keys[]' ~/.claude/settings.json | sort > /tmp/keys-after && diff /tmp/keys-before /tmp/keys-after` shows no removed keys (additions of `statusLine` are expected).
 
 ## Verify
@@ -163,6 +165,7 @@ After Verify passes, explain to the user in chat the user-visible bar behaviors 
 
 - **Drift signal (`↗ /claudefuel.update`).** Appears on Line 1 only when an upstream release is available. Invoking it routes to the upgrade skill.
 - **Cap-ETA (`~cap HH:MM-HH:MM`).** Appears on Line 3 next to the 5-hour `↻ <time>` reset cell only when the user is on track to hit the 5-hour cap before reset. A rough estimate (tilde + range — never a precise time) derived from average burn rate over the current window. Dormant when healthy; the cell shows only `↻ <time>` until burn rate exceeds reset-pace.
+- **The "Now" layer.** Line 1 carries a session identity chip (`◈ <name>`, stable per-session color — `/rename` a session to label it), an `agent: <name>` badge inside subagent sessions, and a live-activity chip (`▸ Bash 12s` — the tool call currently running, from the transcript tail). Activity is best-effort and silently absent when the transcript can't be parsed; all three are hide-able via `/claudefuel.configure` (`session`, `agent`, `activity`). Subagent panel rows render through the same script (`--subagent`).
 - **Live tick.** The bar re-renders every 2 seconds (`statusLine.refreshInterval`), so time-based cells move on their own while the session idles. The natural pairing is `reset_display: "countdown"` (`↻ in 42m` instead of `↻ 5:53pm`) — offer it once here and point at `/claudefuel.configure` to switch; the default stays clock times.
 - **Consultation skills (`/claudefuel.why`, `/claudefuel.coach`).** `why` annotates the bar's current snapshot — burn rate vs reset-pace, the cap-ETA arithmetic, which visibility gates passed or failed, cache ages. `coach` answers usage questions in plain language ("can I finish this refactor before my 5h reset?") with a recommendation. Both read the machine-readable snapshot (`statusline.sh --snapshot`); the bar itself stays a dumb display.
 
@@ -177,9 +180,9 @@ Prefer the `/claudefuel.uninstall` skill — it walks the user through scope and
 1. Remove `~/.claude/statusline.sh`.
 2. Remove each of `~/.claude/commands/claudefuel.{update,doctor,rollback,uninstall,configure,why,coach}.md`.
 3. Remove `~/.claude/cache/claudefuel-version.json`. Remove `~/.claude/cache/` only if empty afterwards.
-4. Remove the `.statusLine` key from `~/.claude/settings.json`:
+4. Remove the `.statusLine` and `.subagentStatusLine` keys from `~/.claude/settings.json`:
    ```bash
-   jq 'del(.statusLine)' ~/.claude/settings.json > ~/.claude/settings.json.tmp \
+   jq 'del(.statusLine, .subagentStatusLine)' ~/.claude/settings.json > ~/.claude/settings.json.tmp \
      && mv ~/.claude/settings.json.tmp ~/.claude/settings.json
    ```
 5. Ask the user whether to delete `*.bak-<timestamp>` backups across the bundle.
