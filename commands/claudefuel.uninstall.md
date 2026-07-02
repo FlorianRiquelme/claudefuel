@@ -10,7 +10,7 @@ Remove every install-managed claudefuel artifact and restore the user's `setting
 Tell the user exactly what will be removed and ask for confirmation. The default scope is the install bundle only:
 
 - `$target_dir/statusline.sh`
-- The five `$target_dir/commands/claudefuel.<name>.md` files (`<name>` ∈ `update doctor rollback uninstall configure`)
+- The seven `$target_dir/commands/claudefuel.<name>.md` files (`<name>` ∈ `update doctor rollback uninstall configure why coach`)
 - The `.statusLine` key in `$target_dir/settings.json` (the rest of the file is preserved)
 - `$target_dir/cache/claudefuel-version.json`
 
@@ -36,7 +36,7 @@ Postcondition: `jq -e 'has("statusLine") | not' "$target_dir/settings.json"` exi
 
 ```bash
 rm -f "$target_dir/statusline.sh"
-for name in update doctor rollback uninstall configure; do
+for name in update doctor rollback uninstall configure why coach; do
   rm -f "$target_dir/commands/claudefuel.${name}.md"
 done
 rm -f "$target_dir/cache/claudefuel-version.json"
@@ -55,6 +55,6 @@ If the user confirmed config cleanup, remove `$target_dir/claudefuel.json`.
 
 - `[ ! -e "$target_dir/statusline.sh" ]`
 - `jq -e 'has("statusLine") | not' "$target_dir/settings.json"` exits 0
-- None of the five `claudefuel.*.md` files remain in `$target_dir/commands/`
+- None of the seven `claudefuel.*.md` files remain in `$target_dir/commands/`
 
 Tell the user to start a new Claude Code session for the bar to disappear from view.

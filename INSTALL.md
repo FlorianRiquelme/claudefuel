@@ -28,8 +28,8 @@ The install is a **bundle**: every artifact below must be present and valid afte
    - Exists, is a regular file (not a broken symlink).
    - Is executable (`-rwx------` or stricter).
    - First 20 lines contain a header line matching the regex `^# claudefuel: v(.+)$` and the captured version parses as `X.Y.Z`. Version is checked at install time against the spec's `Version:` declaration (see Step 2), not against a hardcoded floor.
-2. **Files `~/.claude/commands/claudefuel.{update,doctor,rollback,uninstall,configure}.md`:**
-   - All five present, each readable.
+2. **Files `~/.claude/commands/claudefuel.{update,doctor,rollback,uninstall,configure,why,coach}.md`:**
+   - All seven present, each readable.
    - Each carries a header line matching `^# claudefuel-skill: v(.+)$` within the first 20 lines, captured version parses as `X.Y.Z`.
 3. **Directory `~/.claude/cache/`:**
    - Exists. Contents (including `claudefuel-version.json`) are owned by `statusline.sh` at runtime; install creates the directory but writes no files into it.
@@ -97,6 +97,8 @@ For each of the following files that exists pre-install, copy it to `<file>.bak-
 - `~/.claude/commands/claudefuel.rollback.md`
 - `~/.claude/commands/claudefuel.uninstall.md`
 - `~/.claude/commands/claudefuel.configure.md`
+- `~/.claude/commands/claudefuel.why.md`
+- `~/.claude/commands/claudefuel.coach.md`
 - `~/.claude/settings.json`
 
 Do **not** back up `~/.claude/claudefuel.json` — it is not part of the bundle.
@@ -111,14 +113,14 @@ Postcondition: every file that existed pre-install has a matching `*.bak-<TS>`.
 - `chmod 700 ~/.claude/statusline.sh` (executable, owner-only).
 - Postcondition: `head -20 ~/.claude/statusline.sh | grep -E '^# claudefuel:'` returns the expected version, and the file is executable.
 
-### Step 5 — Install the five `/claudefuel.*` command files
+### Step 5 — Install the seven `/claudefuel.*` command files
 
 - Ensure `~/.claude/commands/` exists; `mkdir -p` it if not.
-- For each of `update`, `doctor`, `rollback`, `uninstall`, `configure`:
+- For each of `update`, `doctor`, `rollback`, `uninstall`, `configure`, `why`, `coach`:
   - Download `https://raw.githubusercontent.com/FlorianRiquelme/claudefuel/main/commands/claudefuel.<name>.md` to a temp file.
   - Verify the file has a `# claudefuel-skill: v...` header in its first 20 lines. If not, abort, delete the temp file, restore prior backups in reverse order (this step's earlier writes, then statusline.sh), and report.
   - `mv` the temp file to `~/.claude/commands/claudefuel.<name>.md` (atomic).
-- Postcondition: all five files exist and each has a parseable `# claudefuel-skill:` header.
+- Postcondition: all seven files exist and each has a parseable `# claudefuel-skill:` header.
 
 ### Step 6 — Create the drift cache directory
 
@@ -160,6 +162,7 @@ After Verify passes, explain to the user in chat the user-visible bar behaviors 
 
 - **Drift signal (`↗ /claudefuel.update`).** Appears on Line 1 only when an upstream release is available. Invoking it routes to the upgrade skill.
 - **Cap-ETA (`~cap HH:MM-HH:MM`).** Appears on Line 3 next to the 5-hour `↻ <time>` reset cell only when the user is on track to hit the 5-hour cap before reset. A rough estimate (tilde + range — never a precise time) derived from average burn rate over the current window. Dormant when healthy; the cell shows only `↻ <time>` until burn rate exceeds reset-pace.
+- **Consultation skills (`/claudefuel.why`, `/claudefuel.coach`).** `why` annotates the bar's current snapshot — burn rate vs reset-pace, the cap-ETA arithmetic, which visibility gates passed or failed, cache ages. `coach` answers usage questions in plain language ("can I finish this refactor before my 5h reset?") with a recommendation. Both read the machine-readable snapshot (`statusline.sh --snapshot`); the bar itself stays a dumb display.
 
 ## Upgrade
 
@@ -170,7 +173,7 @@ Identical to install. The user runs the same paste line again. Reconcile detects
 Prefer the `/claudefuel.uninstall` skill — it walks the user through scope and confirms before removing anything. For agents performing uninstall via this Promptfile directly:
 
 1. Remove `~/.claude/statusline.sh`.
-2. Remove each of `~/.claude/commands/claudefuel.{update,doctor,rollback,uninstall,configure}.md`.
+2. Remove each of `~/.claude/commands/claudefuel.{update,doctor,rollback,uninstall,configure,why,coach}.md`.
 3. Remove `~/.claude/cache/claudefuel-version.json`. Remove `~/.claude/cache/` only if empty afterwards.
 4. Remove the `.statusLine` key from `~/.claude/settings.json`:
    ```bash

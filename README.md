@@ -97,6 +97,10 @@ Once installed, these slash commands are available in any Claude Code session:
 | `/claudefuel.uninstall` | Remove the install bundle cleanly. Asks separately about backups and your `claudefuel.json`. |
 | `/claudefuel.configure` | Edit `~/.claude/claudefuel.json` conversationally — color thresholds, segment ordering, segment show/hide, theme presets. See [Configuration](#configuration). |
 | `/claudefuel.fleet` | Fleet view for multi-profile setups: a table of every known profile's cached 5h/7d usage, reset time, balance, and data age. Read-only — shows what's already cached, never fetches for inactive profiles. |
+| `/claudefuel.why` | Show-your-work view of the bar's current numbers: burn rate vs reset-pace, the cap-ETA arithmetic, which visibility gates passed or failed (and why), cache ages, active profile. |
+| `/claudefuel.coach` | Ask usage questions in plain language — "can I finish this refactor before my 5h reset?", "should I drop to a cheaper model?" — answered from the same snapshot math, ending in a recommendation. |
+
+`/claudefuel.why` and `/claudefuel.coach` read a machine-readable snapshot — `~/.claude/statusline.sh --snapshot` prints versioned JSON of the cached usage data plus the derived burn-rate / cap-ETA math, without fetching anything. The bar itself stays a dumb display; the Claude session you're already in does the explaining.
 
 ## Configuration
 
@@ -143,7 +147,7 @@ Install, upgrade, and uninstall are bundled atomically — every artifact below 
 **Created / managed by the bundle:**
 
 - `~/.claude/statusline.sh` — the script itself
-- `~/.claude/commands/claudefuel.{update,doctor,rollback,uninstall,configure}.md` — the five slash commands
+- `~/.claude/commands/claudefuel.{update,doctor,rollback,uninstall,configure,why,coach}.md` — the seven slash commands
 - `~/.claude/cache/` — drift-check cache directory (contents owned by the script at runtime)
 - The single key `.statusLine` in `~/.claude/settings.json`
 
