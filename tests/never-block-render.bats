@@ -66,8 +66,10 @@ teardown() {
 }
 
 seed_usage_cache() {
+  # used_credits>0 keeps the extra column live (calm-cockpit gate) and
+  # so also defeats nominal collapse regardless of the 5h/7d pcts here.
   cat > "$USAGE_CACHE" <<'EOF'
-{"five_hour":{"utilization":42,"resets_at":"2099-01-01T00:00:00Z"},"seven_day":{"utilization":13,"resets_at":"2099-01-01T00:00:00Z"},"extra_usage":{"is_enabled":true}}
+{"five_hour":{"utilization":42,"resets_at":"2099-01-01T00:00:00Z"},"seven_day":{"utilization":13,"resets_at":"2099-01-01T00:00:00Z"},"extra_usage":{"is_enabled":true,"used_credits":350}}
 EOF
 }
 

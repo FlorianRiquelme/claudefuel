@@ -42,14 +42,14 @@ teardown() {
 # Deterministic usage snapshot: fixed reset timestamps far in the future
 # keep burn rate below reset-pace (no cap-ETA, which reads the wall
 # clock), so repeated renders are byte-identical.
-# Args: [<5h_pct>=20] [<7d_pct>=12] [<extra_enabled>=false]
+# Args: [<5h_pct>=20] [<7d_pct>=12] [<extra_enabled>=false] [<used_credits>=0]
 seed_usage_cache() {
-  local fh_pct=${1:-20} sd_pct=${2:-12} extra=${3:-false}
+  local fh_pct=${1:-20} sd_pct=${2:-12} extra=${3:-false} used_credits=${4:-0}
   cat > "$USAGE_CACHE" <<EOF
 {
   "five_hour":   { "utilization": $fh_pct, "resets_at": "2099-01-01T00:00:00Z" },
   "seven_day":   { "utilization": $sd_pct, "resets_at": "2099-01-02T00:00:00Z" },
-  "extra_usage": { "is_enabled": $extra }
+  "extra_usage": { "is_enabled": $extra, "used_credits": $used_credits }
 }
 EOF
   touch "$USAGE_CACHE"
@@ -133,14 +133,17 @@ run_bar_plain() {
 @test "no config file: default structure renders (regression anchor)" {
   # Golden structural assertions for the no-config render, so the
   # defaults themselves can't silently drift during config work.
-  seed_usage_cache 20 12 false
+  # Non-nominal pcts (>=50): a genuinely nominal snapshot now collapses
+  # lines 2-3 entirely (calm cockpit) — this anchor is for the structure
+  # of a render that HAS something to show, not the collapsed case.
+  seed_usage_cache 55 60 false
   output=$(run_bar_plain)
   line1=$(printf '%s' "$output" | sed -n '1p')
   line2=$(printf '%s' "$output" | sed -n '2p')
   line3=$(printf '%s' "$output" | sed -n '3p')
 
   [[ "$line1" == *"Claude | ctx "*"50k/200k | thinking: On | effort: high"* ]]
-  [[ "$line2" == "5h: "*"20%"*"| 7d: "*"12%"* ]]
+  [[ "$line2" == "5h: "*"55%"*"| 7d: "*"60%"* ]]
   [[ "$line3" == "↻ "*"| ↻ "* ]]
 }
 
@@ -180,7 +183,7 @@ run_bar_plain() {
 }
 
 @test "hide 7d: column disappears from lines 2 and 3" {
-  seed_usage_cache
+  seed_usage_cache 55 12 false
   write_config '{"version": 1, "segments": {"hide": ["7d"]}}'
   output=$(run_bar_plain)
   line2=$(printf '%s' "$output" | sed -n '2p')
@@ -193,7 +196,10 @@ run_bar_plain() {
 }
 
 @test "hide extra: prepaid balance column disappears" {
-  seed_usage_cache 20 12 true
+  # 5h non-nominal (55%) so lines 2-3 keep rendering once extra is
+  # hidden below — otherwise every signal would be nominal and the
+  # calm-cockpit collapse would (correctly) hide the whole row.
+  seed_usage_cache 55 12 true 350
   seed_prepaid_cache
   line2=$(run_bar_plain | sed -n '2p')
   [[ "$line2" == *"extra:"* ]]
@@ -239,7 +245,7 @@ run_bar_plain() {
 }
 
 @test "column ordering: 7d leads lines 2 and 3" {
-  seed_usage_cache 20 12 false
+  seed_usage_cache 55 12 false
   write_config '{"version": 1, "segments": {"order": {"columns": ["7d", "5h", "extra"]}}}'
   output=$(run_bar_plain)
   line2=$(printf '%s' "$output" | sed -n '2p')
@@ -253,7 +259,7 @@ run_bar_plain() {
 }
 
 @test "unknown tokens in order/hide are ignored, known ones still render" {
-  seed_usage_cache
+  seed_usage_cache 55 12 false
   write_config '{"version": 1, "segments": {"order": {"line1": ["bogus", "model", "ctx", "thinking", "effort", "drift"]}, "hide": ["nonsense"]}}'
   CLAUDEFUEL_OFFLINE=1 run bash -c "printf '%s' '$SAMPLE_STDIN' | '$STATUSLINE'"
 
@@ -299,7 +305,7 @@ run_bar_plain() {
 # ===== countdown vs clock =====
 
 @test "reset_display countdown: line 3 shows relative times" {
-  seed_usage_cache
+  seed_usage_cache 55 12 false
   write_config '{"version": 1, "reset_display": "countdown"}'
   line3=$(run_bar_plain | sed -n '3p')
 
@@ -308,7 +314,7 @@ run_bar_plain() {
 }
 
 @test "reset_display clock (default): line 3 shows wall-clock times" {
-  seed_usage_cache
+  seed_usage_cache 55 12 false
   line3=$(run_bar_plain | sed -n '3p')
 
   [[ "$line3" != *"in "* ]]
@@ -318,7 +324,7 @@ run_bar_plain() {
 # ===== theme presets =====
 
 @test "theme mono: no truecolor escapes, content intact" {
-  seed_usage_cache 20 12 true
+  seed_usage_cache 20 12 true 350
   seed_prepaid_cache
   write_config '{"version": 1, "theme": "mono"}'
   output=$(run_bar)

@@ -10,6 +10,16 @@
 # when no usage data is available, line 2 becomes a one-glyph diagnosis plus
 # trailhead: <⊘|⚠|?> ✚ /claudefuel.doctor (auth / network / missing dep).
 #
+# Calm cockpit (earn-your-pixels): Lines 2-3 collapse entirely when all
+# windows are nominal — 5h and 7d below 50% (the first alarm threshold),
+# no window projected to hit 100% before its own reset, no live spend on
+# extra, and no severe-staleness warning pending. Line 1 always renders.
+# When a window crosses 90% its column escalates with shape/weight (⚠
+# label prefix, inverse-video pct), not hue alone. The governing
+# constraint — whichever window would hit 100% first at the current burn
+# rate — carries a ▸ marker (stable layout, no reordering). The extra
+# column renders only once spend is live (>$0).
+#
 # Supports CLAUDE_CONFIG_DIR for per-account usage display.
 # When CLAUDE_CONFIG_DIR is set, keychain lookups and cache files are isolated per account.
 #
@@ -66,6 +76,7 @@ red='\033[38;2;255;85;85m'
 yellow='\033[38;2;230;200;0m'
 white='\033[38;2;220;220;220m'
 dim='\033[2m'
+inverse='\033[7m'
 reset='\033[0m'
 
 # ===== Config: ~/.claude/claudefuel.json over baked-in defaults =====
@@ -77,6 +88,7 @@ reset='\033[0m'
 # @sh-quoted and numbers forced through tonumber, so eval never sees an
 # unquoted user value; segment tokens are additionally whitelisted at
 # render time. Schema carries "version": 1 for future migration.
+# shellcheck disable=SC2034 # read by future migration logic, not yet
 cfg_version=1
 cfg_theme="default"
 cfg_th_orange=50
@@ -321,7 +333,22 @@ segment_drift() {
     local drift_segment
     drift_segment=$(claudefuel_drift_segment)
     [ -n "$drift_segment" ] || return 0
-    printf '%s' "${yellow}${drift_segment}${reset}"
+
+    # Severity gate (calm cockpit): a patch-level bump renders faint —
+    # present but de-escalated; a minor/major bump keeps the yellow weight.
+    # Severity is derived from the same two version strings the segment
+    # compared: the installed header and the cached upstream version.
+    local drift_color="$yellow" drift_installed drift_upstream
+    drift_installed=$(head -20 "${BASH_SOURCE[0]:-$0}" \
+        | grep -E '^# claudefuel:' | head -n1 \
+        | sed -E 's/^# claudefuel: v//')
+    drift_upstream=$(jq -r '.upstream_version // empty' \
+        "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cache/claudefuel-version.json" 2>/dev/null)
+    if [ -n "$drift_upstream" ] && \
+       [ "$(echo "$drift_installed" | cut -d. -f1-2)" = "$(echo "$drift_upstream" | cut -d. -f1-2)" ]; then
+        drift_color="$dim"
+    fi
+    printf '%s' "${drift_color}${drift_segment}${reset}"
 }
 
 line1=""
@@ -855,16 +882,16 @@ format_countdown() {
     fi
 }
 
-# Cap-ETA segment — predicted wall-clock 100% time for the 5h window.
-# Stateless: computed from a single snapshot (pct + reset epoch), no
-# samples persisted across renders. Renders only when burn rate exceeds
-# reset-pace AND pct_used >= 10%. See ADR-0004.
-# Usage: claudefuel_cap_eta_segment <pct_used> <reset_at_epoch>
-# Echoes "~cap HH:MMxm-HH:MMxm" or empty.
-claudefuel_cap_eta_segment() {
+# Projected cap epoch for a usage window — the governing-constraint
+# primitive behind the ▸ marker and the cap-ETA segment. Same gates as
+# ADR-0004: noise floor pct >= 10%, and only meaningful when the window
+# would hit 100% before its own reset. Stateless: pure snapshot math.
+# Usage: claudefuel_cap_epoch <pct_used> <reset_at_epoch> <window_seconds>
+# Echoes the projected 100% epoch, or nothing when the window won't cap.
+claudefuel_cap_epoch() {
     local pct=$1
     local reset_epoch=$2
-    local window_length=$((5 * 3600))
+    local window_length=$3
 
     [ -z "$reset_epoch" ] && return 0
     [ "$pct" -ge 10 ] 2>/dev/null || return 0
@@ -878,6 +905,23 @@ claudefuel_cap_eta_segment() {
     local cap_eta
     cap_eta=$(awk "BEGIN {printf \"%d\", $now + (100 - $pct) * $elapsed / $pct}")
     [ "$cap_eta" -lt "$reset_epoch" ] || return 0
+
+    printf "%s" "$cap_eta"
+}
+
+# Cap-ETA segment — predicted wall-clock 100% time for the 5h window.
+# Stateless: computed from a single snapshot (pct + reset epoch), no
+# samples persisted across renders. Renders only when burn rate exceeds
+# reset-pace AND pct_used >= 10%. See ADR-0004.
+# Usage: claudefuel_cap_eta_segment <pct_used> <reset_at_epoch>
+# Echoes "~cap HH:MMxm-HH:MMxm" or empty.
+claudefuel_cap_eta_segment() {
+    local pct=$1
+    local reset_epoch=$2
+
+    local cap_eta
+    cap_eta=$(claudefuel_cap_epoch "$pct" "$reset_epoch" $((5 * 3600)))
+    [ -z "$cap_eta" ] && return 0
 
     local cap_low=$(( cap_eta - 900 )) cap_high=$(( cap_eta + 900 ))
     local low_str high_str
@@ -922,12 +966,12 @@ pad_column() {
 # are pure data — Line 3 always mirrors Line 2's column order.
 
 # ---- 5-hour ----
+# five_hour_pct / five_hour_reset_iso / five_hour_reset_epoch and the
+# $governing marker are precomputed once before the column loop (see the
+# window-snapshot block below) — the governing constraint needs both
+# windows before either column renders.
 column_5h() {
-    local five_hour_pct five_hour_reset_iso five_hour_reset five_hour_bar
-    five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
-    five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
-    local five_hour_reset_epoch
-    five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
+    local five_hour_reset five_hour_bar
     if [ "$cfg_reset_display" = "countdown" ]; then
         five_hour_reset=$(format_countdown "$five_hour_reset_epoch")
     else
@@ -935,9 +979,20 @@ column_5h() {
     fi
     five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
 
-    # Calculate visible length: "5h: " + bar + " " + "XX%"
-    local col1_bar_vis_len=$(( 4 + bar_width + 1 + ${#five_hour_pct} + 1 ))
-    local col1_bar_raw="${white}5h:${reset} ${five_hour_bar} ${cyan}${five_hour_pct}%${reset}"
+    # ≥90% escalation: shape/weight, not hue alone — ⚠ label prefix and
+    # inverse-video pct. ▸ marks the governing constraint. Prefix length
+    # is tracked numerically (multibyte glyphs defeat ${#} under some locales).
+    local col1_prefix="" col1_prefix_len=0
+    [ "$governing" = "5h" ] && { col1_prefix+="▸"; col1_prefix_len=$(( col1_prefix_len + 1 )); }
+    local col1_pct_str="${cyan}${five_hour_pct}%${reset}"
+    if [ "$five_hour_pct" -ge 90 ]; then
+        col1_prefix+="⚠"; col1_prefix_len=$(( col1_prefix_len + 1 ))
+        col1_pct_str="${red}${inverse}${five_hour_pct}%${reset}"
+    fi
+
+    # Calculate visible length: prefix + "5h: " + bar + " " + "XX%"
+    local col1_bar_vis_len=$(( col1_prefix_len + 4 + bar_width + 1 + ${#five_hour_pct} + 1 ))
+    local col1_bar_raw="${white}${col1_prefix}5h:${reset} ${five_hour_bar} ${col1_pct_str}"
 
     # Staleness age marker — one snapshot drives lines 2–3, so one marker
     # on the leading (5h) cell: `·9m` = this data is 9 minutes old.
@@ -971,18 +1026,24 @@ column_5h() {
 
 # ---- 7-day ----
 column_7d() {
-    local seven_day_pct seven_day_reset_iso seven_day_reset seven_day_bar
-    seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
-    seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
+    local seven_day_reset seven_day_bar
     if [ "$cfg_reset_display" = "countdown" ]; then
-        seven_day_reset=$(format_countdown "$(iso_to_epoch "$seven_day_reset_iso")")
+        seven_day_reset=$(format_countdown "$seven_day_reset_epoch")
     else
         seven_day_reset=$(format_reset_time "$seven_day_reset_iso" "datetime")
     fi
     seven_day_bar=$(build_bar "$seven_day_pct" "$bar_width")
 
-    local col2_bar_vis_len=$(( 4 + bar_width + 1 + ${#seven_day_pct} + 1 ))
-    col_bar="${white}7d:${reset} ${seven_day_bar} ${cyan}${seven_day_pct}%${reset}"
+    local col2_prefix="" col2_prefix_len=0
+    [ "$governing" = "7d" ] && { col2_prefix+="▸"; col2_prefix_len=$(( col2_prefix_len + 1 )); }
+    local col2_pct_str="${cyan}${seven_day_pct}%${reset}"
+    if [ "$seven_day_pct" -ge 90 ]; then
+        col2_prefix+="⚠"; col2_prefix_len=$(( col2_prefix_len + 1 ))
+        col2_pct_str="${red}${inverse}${seven_day_pct}%${reset}"
+    fi
+
+    local col2_bar_vis_len=$(( col2_prefix_len + 4 + bar_width + 1 + ${#seven_day_pct} + 1 ))
+    col_bar="${white}${col2_prefix}7d:${reset} ${seven_day_bar} ${col2_pct_str}"
     col_bar=$(pad_column "$col_bar" "$col2_bar_vis_len" "$col2w")
 
     local col2_reset_plain="↻ ${seven_day_reset}"
@@ -991,14 +1052,19 @@ column_7d() {
 }
 
 # ---- Extra usage (prepaid credit balance) ----
+# Visibility gate: the column earns its pixels only once spend is live
+# (used_credits > 0) — a $0 month renders nothing. This supersedes gating
+# on the balance itself: a depleted balance with live spend still renders
+# (an out-of-credit alarm must never hide).
 column_extra() {
-    local extra_enabled prepaid_raw_amount
+    local extra_enabled extra_spent extra_spend_live prepaid_raw_amount
     extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')
-    prepaid_raw_amount=$(echo "$prepaid_data" | jq -r '.amount // 0')
-    [ "$extra_enabled" = "true" ] && [ -n "$prepaid_data" ] \
-        && awk -v n="$prepaid_raw_amount" 'BEGIN { exit !(n != 0) }' || return 0
+    extra_spent=$(echo "$usage_data" | jq -r '.extra_usage.used_credits // 0')
+    extra_spend_live=$(awk "BEGIN {print ($extra_spent > 0) ? \"true\" : \"false\"}")
+    [ "$extra_enabled" = "true" ] && [ "$extra_spend_live" = "true" ] && [ -n "$prepaid_data" ] || return 0
 
     local prepaid_amount prepaid_currency sym
+    prepaid_raw_amount=$(echo "$prepaid_data" | jq -r '.amount // 0')
     prepaid_amount=$(echo "$prepaid_raw_amount" | awk '{printf "%.2f", $1/100}')
     prepaid_currency=$(echo "$prepaid_data" | jq -r '.currency // "USD"')
     case "$prepaid_currency" in
@@ -1024,6 +1090,29 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     col1w=19
     col2w=19
 
+    # ---- Window snapshots (extracted up front: the governing-constraint
+    # marker needs both windows before either column renders) ----
+    five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
+    five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
+    five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
+    seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
+    seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
+    seven_day_reset_epoch=$(iso_to_epoch "$seven_day_reset_iso")
+
+    # ---- Governing constraint (▸) — whichever window would hit 100%
+    # first at the current burn rate, dive-computer style. A marker, not
+    # a reordering: the layout stays stable for spatial memory. Empty
+    # when no window is projected to cap before its own reset.
+    five_hour_cap=$(claudefuel_cap_epoch "$five_hour_pct" "$five_hour_reset_epoch" $((5 * 3600)))
+    seven_day_cap=$(claudefuel_cap_epoch "$seven_day_pct" "$seven_day_reset_epoch" $((7 * 24 * 3600)))
+    governing=""
+    if [ -n "$five_hour_cap" ] && [ -n "$seven_day_cap" ]; then
+        if [ "$five_hour_cap" -le "$seven_day_cap" ]; then governing="5h"; else governing="7d"; fi
+    elif [ -n "$five_hour_cap" ]; then governing="5h"
+    elif [ -n "$seven_day_cap" ]; then governing="7d"
+    fi
+
+    extra_rendered=false
     for col in $cfg_columns_order; do
         case "$col" in 5h|7d|extra) ;; *) continue ;; esac
         segment_hidden "$col" && continue
@@ -1033,6 +1122,7 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
         if [ -n "$col_bar" ]; then
             [ -n "$line2" ] && line2+="$sep"
             line2+="$col_bar"
+            [ "$col" = "extra" ] && extra_rendered=true
         fi
         if [ -n "$col_reset" ]; then
             [ -n "$line3" ] && line3+="$sep"
@@ -1050,6 +1140,19 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
         else
             line2+="${sep}${red}⚠ updates soon${reset}"
         fi
+    fi
+
+    # Calm-cockpit collapse: when every window is nominal the rows below
+    # Line 1 earn no pixels — the bar physically growing back is the
+    # pre-attentive alarm. Nominal = 5h and 7d both below 50% (the first
+    # alarm threshold in build_bar), no window projected to cap before
+    # its own reset (governing empty, which also covers cap-ETA), no live
+    # spend on extra, and no severe-staleness warning pending (collapsing
+    # would hide an active fetch-failure alarm). Line 1 always renders.
+    if [ "$five_hour_pct" -lt 50 ] && [ "$seven_day_pct" -lt 50 ] \
+        && [ -z "$governing" ] && ! $extra_rendered && ! $usage_stale; then
+        line2=""
+        line3=""
     fi
 elif [ -n "$usage_failure" ]; then
     # Failed gauge reads FAILED: no data to show and a known failure class.

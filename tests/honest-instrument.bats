@@ -51,9 +51,12 @@ iso_from_epoch() {
     || date -u -d "@$epoch" +"%Y-%m-%dT%H:%M:%SZ"
 }
 
-# Seed usage cache with a healthy snapshot. Args: [extra_enabled=false]
+# Seed usage cache with a healthy snapshot.
+# Args: [extra_enabled=false] [used_credits=350]
+# used_credits defaults to a live spend so the calm-cockpit extra-column
+# gate (hidden until spend > $0) lets extra render when enabled.
 seed_usage_cache() {
-  local enabled=${1:-false}
+  local enabled=${1:-false} used_credits=${2:-350}
   local now fh_iso sd_iso
   now=$(date +%s)
   fh_iso=$(iso_from_epoch $(( now + 10800 )))
@@ -62,7 +65,7 @@ seed_usage_cache() {
 {
   "five_hour":   { "utilization": 62, "resets_at": "$fh_iso" },
   "seven_day":   { "utilization": 12, "resets_at": "$sd_iso" },
-  "extra_usage": { "is_enabled": $enabled }
+  "extra_usage": { "is_enabled": $enabled, "used_credits": $used_credits }
 }
 EOF
   touch "$USAGE_CACHE"

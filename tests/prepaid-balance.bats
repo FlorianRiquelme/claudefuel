@@ -7,11 +7,14 @@
 # the network, feed stdin, assert on stdout.
 #
 # Behavior under test:
-#   - When extra_usage.is_enabled=true AND prepaid cache is present AND
-#     the balance is non-zero, render `extra: <symbol><amount>` using the
-#     API `currency` field.
+#   - When extra_usage.is_enabled=true AND spend is live (used_credits>0)
+#     AND prepaid cache is present, render `extra: <symbol><amount>`
+#     using the API `currency` field.
 #   - When extra_usage.is_enabled=false, omit the column entirely.
-#   - When the prepaid balance is zero, omit the column entirely (noise).
+#   - When spend is $0, omit the column (calm-cockpit visibility gate) —
+#     this supersedes gating on the balance itself: a depleted balance
+#     with live spend still renders (an out-of-credit alarm is exactly
+#     the honest-instrument case that must never hide).
 #   - Currency symbol mapping: EUR→€, GBP→£, JPY→¥, anything else→$.
 
 SAMPLE_STDIN='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"},"session_id":"t"}'
@@ -42,14 +45,17 @@ teardown() {
 }
 
 # Seed usage cache with extra_usage enabled or disabled.
-# Args: <extra_enabled: true|false>
+# used_credits defaults to a live spend so the calm-cockpit gate
+# (column hidden until spend > $0) lets the column render.
+# Args: <extra_enabled: true|false> [<used_credits>=350]
 seed_usage_cache() {
   local enabled=$1
+  local used_credits=${2:-350}
   cat > "$USAGE_CACHE" <<EOF
 {
   "five_hour":   { "utilization": 5, "resets_at": "2099-01-01T00:00:00Z" },
   "seven_day":   { "utilization": 5, "resets_at": "2099-01-01T00:00:00Z" },
-  "extra_usage": { "is_enabled": $enabled }
+  "extra_usage": { "is_enabled": $enabled, "used_credits": $used_credits }
 }
 EOF
   touch "$USAGE_CACHE"
@@ -135,9 +141,9 @@ run_bar() {
   [[ "$line2" != *"extra:"* ]]
 }
 
-@test "zero balance: column is omitted entirely" {
-  seed_usage_cache true
-  seed_prepaid_cache 0 USD
+@test "spend at \$0: column is omitted until spend is live (calm-cockpit gate)" {
+  seed_usage_cache true 0
+  seed_prepaid_cache 5929 EUR
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p')
@@ -145,14 +151,14 @@ run_bar() {
   [[ "$line2" != *"extra:"* ]]
 }
 
-@test "zero balance as 0.00: column is omitted entirely" {
+@test "balance depleted but spend is live: column still renders \$0.00 (out-of-credit alarm)" {
   seed_usage_cache true
-  seed_prepaid_cache 0.00 USD
+  seed_prepaid_cache 0 USD
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p')
 
-  [[ "$line2" != *"extra:"* ]]
+  [[ "$line2" == *"extra: \$0.00"* ]]
 }
 
 @test "prepaid cache missing: column is omitted even when extra_usage enabled" {
