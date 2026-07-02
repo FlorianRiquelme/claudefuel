@@ -54,7 +54,7 @@ All keys optional; absent keys use the default. Write **sparse**: `"version": 1`
 | `reset_display` | `"clock"` | Line 3 style: `"clock"` (`↻ 5:30pm`) or `"countdown"` (`↻ in 42m`). |
 | `segments.order.line1` | `["model","session","ctx","thinking","effort","agent","activity","drift"]` | Line 1 order. `session` = identity chip (`◈ name`), `agent` = subagent badge, `activity` = live tool call (`▸ Bash 12s`). |
 | `segments.order.columns` | `["5h","7d","extra"]` | Column order for Lines 2 **and** 3 (Line 3 mirrors Line 2). |
-| `segments.hide` | `[]` | Any order token above, plus hide-only `"profile"` (the `[name]` badge), `"cap_eta"` (the `~cap` range, ADR-0004), and `"projection"` (the `→N%` landing prediction on the 5h cell). |
+| `segments.hide` | `[]` | Any order token above, plus hide-only `"profile"` (the `[name]` badge), `"cap_eta"` (the `~cap` range, ADR-0004), `"projection"` (the `→N%` landing prediction on the 5h cell), and `"sessions"` (the `⧉ N` shared-window session count). |
 
 Unknown tokens/keys are ignored by the bar; `--validate-config` warns about them with a nearest-match suggestion.
 
