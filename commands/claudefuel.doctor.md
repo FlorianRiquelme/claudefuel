@@ -1,7 +1,7 @@
 ---
 description: Verify claudefuel install health
 ---
-# claudefuel-skill: v0.4.4
+# claudefuel-skill: v0.4.5
 
 Run a non-destructive health check across the install. Report each item pass/fail without making changes. Use `$CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`.
 
