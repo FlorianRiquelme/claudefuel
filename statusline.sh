@@ -222,7 +222,7 @@ claudefuel_config_report() {
     jq --argjson d "$defaults" '
         def line1_tokens: ["model","session","ctx","thinking","effort","agent","activity","drift"];
         def column_tokens: ["5h","7d","extra"];
-        def hide_tokens: line1_tokens + column_tokens + ["profile","cap_eta"];
+        def hide_tokens: line1_tokens + column_tokens + ["profile","cap_eta","projection"];
         def known_keys: ["version","theme","color_thresholds","reset_display","segments"];
 
         # Nearest-match hint for a mistyped token, prefix-based ("7day" →
@@ -411,6 +411,8 @@ if [ "${1:-}" = "--snapshot" ]; then
            then ($pct / $elapsed * 3600) else null end) as $burn_rate
         | (if $pct != null and $pct > 0 and $elapsed != null and $elapsed > 0
            then (($now + (100 - $pct) * $elapsed / $pct) | floor) else null end) as $cap_eta
+        | (if $pct != null and $elapsed != null and $elapsed > 0
+           then (($pct * 18000 / $elapsed) | floor) else null end) as $projected
         | (if $pct == null then null else $pct >= 10 end) as $noise_pass
         | (if $cap_eta == null or $resets_epoch == null then false
            else $cap_eta < $resets_epoch end) as $threshold_pass
@@ -463,6 +465,7 @@ if [ "${1:-}" = "--snapshot" ]; then
                 elapsed_seconds: $elapsed,
                 burn_rate_pct_per_hour: $burn_rate,
                 reset_pace_pct_per_hour: 20,
+                projected_pct_at_reset: $projected,
                 cap_eta_epoch: $cap_eta,
                 cap_eta: (if $cap_eta == null then null else ($cap_eta | todate) end),
                 cap_eta_range_seconds: 900,
@@ -1628,6 +1631,42 @@ claudefuel_burn_chip() {
     printf "~%s ×%s" "$(format_duration "$time_to_cap")" "$ratio"
 }
 
+# End-of-window projection — `→N%`: where the 5h window lands at reset
+# if the current average pace holds (pct × window / elapsed). Stateless,
+# same snapshot algebra as the burn chip, and its exact complement:
+#   ratio > 1  → the burn chip + cap-ETA own the story (projection would
+#                just read →100%) — dormant here.
+#   ratio ≤ 1  → no cap coming, but where do I land? Renders when the
+#                projected landing crosses the yellow severity threshold
+#                (config-driven: a calmer ladder also calms this chip).
+# Same noise floor as cap-ETA (pct >= 10, ADR-0004). The → glyph marks
+# it a prediction, never a measurement.
+# Usage: claudefuel_projection <pct_used> <reset_at_epoch>
+# Echoes "→N%" or empty.
+claudefuel_projection() {
+    local pct=$1
+    local reset_epoch=$2
+    local window_length=$((5 * 3600))
+
+    [ -z "$reset_epoch" ] && return 0
+    [ "$pct" -ge 10 ] 2>/dev/null || return 0
+
+    local now window_started elapsed
+    now=$(cf_now)
+    window_started=$(( reset_epoch - window_length ))
+    elapsed=$(( now - window_started ))
+    [ "$elapsed" -gt 0 ] || return 0
+
+    # Burning hot (ratio > 1): dormant — the burn chip renders instead.
+    [ $(( pct * window_length )) -le $(( 100 * elapsed )) ] || return 0
+
+    local projected
+    projected=$(awk "BEGIN {printf \"%d\", $pct * $window_length / $elapsed}")
+    [ "$projected" -ge "$cfg_th_yellow" ] || return 0
+
+    printf "→%s%%" "$projected"
+}
+
 # Cap-ETA segment — predicted wall-clock 100% time for the 5h window.
 # Stateless: computed from a single snapshot (pct + reset epoch), no
 # samples persisted across renders. Renders only when burn rate exceeds
@@ -1755,6 +1794,14 @@ column_5h() {
     else
         col1_value_plain="${five_hour_pct}%"
     fi
+
+    # End-of-window projection (→N% at reset) — only meaningful when the
+    # burn chip is dormant (ratio ≤ 1); its own gates live in
+    # claudefuel_projection. Hide-only token "projection".
+    local proj_plain=""
+    if [ -z "$burn_chip_plain" ] && ! segment_hidden projection; then
+        proj_plain=$(claudefuel_projection "$five_hour_pct" "$five_hour_reset_epoch")
+    fi
     if $escalate; then
         col1_pct_str="${red}${inverse}${col1_value_plain}${reset}"
     else
@@ -1764,6 +1811,15 @@ column_5h() {
     # Calculate visible length: prefix + "5h: " + bar + " " + value
     local col1_bar_vis_len=$(( col1_prefix_len + 4 + bar_width + 1 + ${#col1_value_plain} ))
     local col1_bar_raw="${white}${col1_prefix}5h:${reset} ${five_hour_bar} ${col1_pct_str}"
+
+    # Prediction chip rides dim after the value. Visible length counted
+    # numerically: 1 for the → glyph + the ASCII remainder (multibyte
+    # glyphs defeat ${#} under some locales).
+    if [ -n "$proj_plain" ]; then
+        local proj_rest="${proj_plain#→}"
+        col1_bar_raw+=" ${dim}${proj_plain}${reset}"
+        col1_bar_vis_len=$(( col1_bar_vis_len + 2 + ${#proj_rest} ))
+    fi
 
     # Staleness age marker — one snapshot drives lines 2–3, so one marker
     # on the leading (5h) cell: `·9m` = this data is 9 minutes old.
