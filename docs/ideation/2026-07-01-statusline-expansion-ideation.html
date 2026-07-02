@@ -1,0 +1,422 @@
+<title>Ideation: claudefuel Statusline — What Else Can We Do?</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --surface: #171a21;
+    --surface-2: #1e222b;
+    --border: #2a2f3a;
+    --text: #e6e9ef;
+    --text-muted: #9aa3b2;
+    --accent: #5eb0ff;
+    --accent-text: #bfe0ff;
+    --accent-soft: #16283b;
+    --warn: #f0a85e;
+    --warn-text: #ffd9ad;
+    --warn-soft: #3a2a16;
+    --good: #6fd19a;
+    --good-text: #b9f0d0;
+    --good-soft: #16321f;
+    --danger: #f07a7a;
+    --danger-text: #ffc2c2;
+    --danger-soft: #3a1a1a;
+    --mono: "SF Mono", "Cascadia Code", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    margin: 0;
+    padding: 0;
+    line-height: 1.55;
+  }
+  .page {
+    max-width: 900px;
+    margin-inline: auto;
+    padding: 2.5rem 1.5rem 5rem;
+  }
+  h1, h2, h3 { line-height: 1.25; }
+  h1 { font-size: 1.7rem; margin-bottom: 0.25rem; }
+  h2 {
+    font-size: 1.25rem;
+    margin-top: 3rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 { font-size: 1.05rem; }
+  p { max-width: 72ch; }
+  code {
+    font-family: var(--mono);
+    background: var(--surface-2);
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+    font-size: 0.9em;
+  }
+  a { color: var(--accent); }
+
+  .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  header.doc-header {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 1.5rem;
+  }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.25rem;
+    margin-top: 0.75rem;
+    font-size: 0.88rem;
+    color: var(--text-muted);
+  }
+  .meta-row strong { color: var(--text); font-weight: 600; }
+
+  /* stats strip */
+  .stats-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.75rem;
+    margin: 1.5rem 0;
+  }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.9rem 1rem;
+  }
+  .stat .num { font-size: 1.5rem; font-weight: 700; }
+  .stat .label { font-size: 0.78rem; color: var(--text-muted); margin-top: 0.15rem; }
+
+  /* headline callout */
+  .callout {
+    border-radius: 12px;
+    padding: 1.25rem 1.4rem;
+    margin: 1.25rem 0;
+    background: var(--warn-soft);
+  }
+  .callout .eyebrow { color: var(--warn-text); }
+  .callout p { max-width: none; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.92rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.55rem 0.7rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { color: var(--text-muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  tr:last-child td { border-bottom: none; }
+
+  .axis-list { list-style: none; padding: 0; margin: 1rem 0; }
+  .axis-list li {
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 0.5rem;
+    background: var(--surface);
+  }
+  .axis-list .axis-name { font-weight: 600; }
+
+  .jumplist { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1rem 0 1.5rem; }
+  .jumplist a {
+    display: inline-block;
+    padding: 0.35rem 0.75rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.82rem;
+    text-decoration: none;
+    color: var(--text);
+  }
+  .jumplist a:hover { border-color: var(--accent); color: var(--accent-text); }
+
+  article.idea {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.4rem 1.5rem;
+    margin-bottom: 1.25rem;
+  }
+  .idea-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+  .idea-id {
+    font-family: var(--mono);
+    background: var(--accent-soft);
+    color: var(--accent-text);
+    border-radius: 6px;
+    padding: 0.1em 0.5em;
+    font-size: 0.85rem;
+    font-weight: 700;
+  }
+  .idea-title { font-size: 1.15rem; font-weight: 700; margin: 0; }
+  .idea-axis-chip {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.1em 0.6em;
+  }
+  dl.idea-meta {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.35rem 1rem;
+    margin: 1rem 0 0.5rem;
+    font-size: 0.94rem;
+  }
+  dl.idea-meta dt { color: var(--text-muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; padding-top: 0.15rem; }
+  dl.idea-meta dd { margin: 0; }
+  .pill { display: inline-block; border-radius: 999px; padding: 0.1em 0.6em; font-size: 0.8rem; font-weight: 600; }
+  .pill.conf-high { background: var(--good-soft); color: var(--good-text); }
+  .pill.conf-medium { background: var(--warn-soft); color: var(--warn-text); }
+  .pill.conf-low { background: var(--danger-soft); color: var(--danger-text); }
+  .basis-tag { font-family: var(--mono); font-size: 0.82rem; color: var(--accent-text); }
+
+  .tension-flag {
+    margin-top: 0.9rem;
+    padding: 0.6rem 0.9rem;
+    border-radius: 8px;
+    background: var(--danger-soft);
+    color: var(--danger-text);
+    font-size: 0.88rem;
+  }
+
+  svg.diagram { width: 100%; height: auto; margin: 1rem 0; }
+  svg text { font-family: var(--sans); }
+
+  footer.composition-signal {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+</style>
+
+<div class="page">
+
+<header class="doc-header">
+  <span class="eyebrow">Ideation</span>
+  <h1>claudefuel Statusline — What Else Can We Do?</h1>
+  <div class="meta-row">
+    <span><strong>Date:</strong> 2026-07-01</span>
+    <span><strong>Topic:</strong> statusline-expansion</span>
+    <span><strong>Focus:</strong> "what else can we do with the status bar?"</span>
+    <span><strong>Mode:</strong> repo-grounded</span>
+  </div>
+</header>
+
+<div class="stats-strip">
+  <div class="stat"><div class="num">46</div><div class="label">raw ideas generated</div></div>
+  <div class="stat"><div class="num">25</div><div class="label">deduped + synthesized candidates</div></div>
+  <div class="stat"><div class="num">7</div><div class="label">already exist as unmerged branches</div></div>
+  <div class="stat"><div class="num">4</div><div class="label">genuinely novel survivors</div></div>
+</div>
+
+<section id="headline-finding">
+  <h2>Headline Finding</h2>
+  <div class="callout">
+    <span class="eyebrow">Dominates everything below</span>
+    <p>All 7 ranked ideas from the prior <code>2026-06-10</code> ideation doc already exist as fully-built, tested, single-commit prototype branches — forked from the same base commit (<code>70a7092</code>) as the branch this session ran on, built the same day as that ideation session, and never merged. This fresh pass's five ideation frames independently re-derived nearly the same seven directions (unsurprising — they read the same repo evidence), but none of the grounding agents ran <code>git branch -a</code>, so the re-derivation happened blind to the fact that working, tested code already sits on disk. The basis verifier caught this on a repo spot-check.</p>
+    <p><strong>The highest-value next step is evaluating and merging these branches — not re-ideating their territory.</strong></p>
+  </div>
+
+  <svg class="diagram" viewBox="0 0 860 300" xmlns="http://www.w3.org/2000/svg">
+    <rect x="370" y="20" width="120" height="40" rx="8" fill="#1e222b" stroke="#2a2f3a"/>
+    <text x="430" y="44" text-anchor="middle" fill="#e6e9ef" font-size="13" font-weight="700">70a7092</text>
+    <text x="430" y="14" text-anchor="middle" fill="#9aa3b2" font-size="11">shared base commit</text>
+
+    <!-- fan-out lines -->
+    <line x1="430" y1="60" x2="70"  y2="110" stroke="#2a2f3a" stroke-width="1.5"/>
+    <line x1="430" y1="60" x2="195" y2="110" stroke="#2a2f3a" stroke-width="1.5"/>
+    <line x1="430" y1="60" x2="320" y2="110" stroke="#2a2f3a" stroke-width="1.5"/>
+    <line x1="430" y1="60" x2="445" y2="110" stroke="#2a2f3a" stroke-width="1.5"/>
+    <line x1="430" y1="60" x2="570" y2="110" stroke="#2a2f3a" stroke-width="1.5"/>
+    <line x1="430" y1="60" x2="695" y2="110" stroke="#2a2f3a" stroke-width="1.5"/>
+    <line x1="430" y1="60" x2="810" y2="110" stroke="#2a2f3a" stroke-width="1.5"/>
+
+    <!-- 7 branch boxes -->
+    <g font-size="11" fill="#e6e9ef">
+      <rect x="10"  y="112" width="120" height="58" rx="8" fill="#16283b" stroke="#2a2f3a"/>
+      <text x="70" y="132" text-anchor="middle" font-weight="700">honest-</text>
+      <text x="70" y="146" text-anchor="middle" font-weight="700">instrument</text>
+      <text x="70" y="162" text-anchor="middle" fill="#9aa3b2" font-size="9.5">0a9c6ae</text>
+
+      <rect x="135" y="112" width="120" height="58" rx="8" fill="#16283b" stroke="#2a2f3a"/>
+      <text x="195" y="132" text-anchor="middle" font-weight="700">configure-</text>
+      <text x="195" y="146" text-anchor="middle" font-weight="700">foundation</text>
+      <text x="195" y="162" text-anchor="middle" fill="#9aa3b2" font-size="9.5">c438239</text>
+
+      <rect x="260" y="112" width="120" height="58" rx="8" fill="#16283b" stroke="#2a2f3a"/>
+      <text x="320" y="139" text-anchor="middle" font-weight="700">burn-radar</text>
+      <text x="320" y="162" text-anchor="middle" fill="#9aa3b2" font-size="9.5">7e0a025</text>
+
+      <rect x="385" y="112" width="120" height="58" rx="8" fill="#16283b" stroke="#2a2f3a"/>
+      <text x="445" y="132" text-anchor="middle" font-weight="700">never-block-</text>
+      <text x="445" y="146" text-anchor="middle" font-weight="700">render</text>
+      <text x="445" y="162" text-anchor="middle" fill="#9aa3b2" font-size="9.5">fa9c911</text>
+
+      <rect x="510" y="112" width="120" height="58" rx="8" fill="#16283b" stroke="#2a2f3a"/>
+      <text x="570" y="132" text-anchor="middle" font-weight="700">calm-</text>
+      <text x="570" y="146" text-anchor="middle" font-weight="700">cockpit</text>
+      <text x="570" y="162" text-anchor="middle" fill="#9aa3b2" font-size="9.5">3a340a8</text>
+
+      <rect x="635" y="112" width="120" height="58" rx="8" fill="#16283b" stroke="#2a2f3a"/>
+      <text x="695" y="132" text-anchor="middle" font-weight="700">cross-profile-</text>
+      <text x="695" y="146" text-anchor="middle" font-weight="700">headroom</text>
+      <text x="695" y="162" text-anchor="middle" fill="#9aa3b2" font-size="9.5">a7d5d56</text>
+
+      <rect x="750" y="112" width="110" height="58" rx="8" fill="#16283b" stroke="#2a2f3a"/>
+      <text x="805" y="132" text-anchor="middle" font-weight="700">conversational-</text>
+      <text x="805" y="146" text-anchor="middle" font-weight="700">copilot</text>
+      <text x="805" y="162" text-anchor="middle" fill="#9aa3b2" font-size="9.5">13a2d23</text>
+    </g>
+
+    <text x="430" y="210" text-anchor="middle" fill="#f0a85e" font-size="13" font-weight="700">7 branches, 0 merged</text>
+    <text x="430" y="230" text-anchor="middle" fill="#9aa3b2" font-size="11">each covers a top-ranked idea from the 2026-06-10 ideation doc, each has real test coverage</text>
+  </svg>
+
+  <table>
+    <thead>
+      <tr><th>Branch</th><th>Commit</th><th>Covers</th><th>Confirmed by verifier</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><a href="https://github.com/FlorianRiquelme/claudefuel/tree/feat/honest-instrument"><code>feat/honest-instrument</code></a></td><td><code>0a9c6ae</code></td><td>Honest Instrument (staleness/failure states)</td><td>stale markers + failure trailhead present</td></tr>
+      <tr><td><a href="https://github.com/FlorianRiquelme/claudefuel/tree/feat/configure-foundation"><code>feat/configure-foundation</code></a></td><td><code>c438239</code></td><td>Config foundation</td><td>severity ladder + jq config loader wired</td></tr>
+      <tr><td><a href="https://github.com/FlorianRiquelme/claudefuel/tree/feat/burn-radar"><code>feat/burn-radar</code></a></td><td><code>7e0a025</code></td><td>Ledger-to-radar (pace/burn-ratio)</td><td><code>tests/burn-radar.bats</code>, 279 lines</td></tr>
+      <tr><td><a href="https://github.com/FlorianRiquelme/claudefuel/tree/feat/never-block-render"><code>feat/never-block-render</code></a></td><td><code>fa9c911</code></td><td>Never-block render</td><td><code>CLAUDEFUEL_OFFLINE</code> gates all 3 fetch sites</td></tr>
+      <tr><td><a href="https://github.com/FlorianRiquelme/claudefuel/tree/feat/calm-cockpit"><code>feat/calm-cockpit</code></a></td><td><code>3a340a8</code></td><td>Calm Cockpit (progressive alarm)</td><td>still hue-only in <code>build_bar</code> — see idea 3 below</td></tr>
+      <tr><td><a href="https://github.com/FlorianRiquelme/claudefuel/tree/feat/cross-profile-headroom"><code>feat/cross-profile-headroom</code></a></td><td><code>a7d5d56</code></td><td>Cross-profile headroom</td><td><code>/claudefuel.fleet</code> skill, <code>tests/cross-profile.bats</code> 256 lines</td></tr>
+      <tr><td><a href="https://github.com/FlorianRiquelme/claudefuel/tree/feat/conversational-copilot"><code>feat/conversational-copilot</code></a></td><td><code>13a2d23</code></td><td>Conversational Copilot</td><td><code>/claudefuel.why</code> skill, <code>tests/snapshot.bats</code> 156 lines</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="grounding">
+  <h2>Codebase Context</h2>
+  <p>claudefuel is a pure bash+jq+curl statusline for Claude Code (~680 lines in <code>statusline.sh</code>), distributed as a "Promptfile" (ADR-0001) rather than a plugin. Display: Line 1 <code>[profile] Model | ctx ●●○○ used/total | thinking | effort | ↗ update-drift</code>; Line 2 <code>5h/7d/extra</code> bars + prepaid balance; Line 3 reset times + cap-ETA. Rendering is inline string concatenation, so segment show/hide/reordering is structurally impossible without the config-loader work in <code>feat/configure-foundation</code>. <code>build_bar</code>'s hue thresholds (red≥90/yellow≥70/orange≥50/green) are the only severity channel. Line2/line3 silently collapse to empty strings on fetch failure with no cache — a gap <code>feat/honest-instrument</code> already addresses. The render path makes 5 sequential curl calls (~23s worst case) with a <code>CLAUDEFUEL_OFFLINE</code> gap that <code>feat/never-block-render</code> already closes. Multi-account isolation uses a <code>CACHE_SUFFIX</code> hash per <code>CLAUDE_CONFIG_DIR</code>; all profile caches land in one flat, globbable <code>/tmp/claude/</code> directory — <code>feat/cross-profile-headroom</code> already reads across them via a new <code>/claudefuel.fleet</code> skill. <code>claudefuel_cap_eta_segment</code> computes elapsed/pct/pace as a pure function of one snapshot (ADR-0004: no cross-render state, no daemon) — <code>feat/burn-radar</code> already extends this into a pace chip and steer-to framing. <code>input_tokens</code>/<code>cache_create</code>/<code>cache_read</code> are fetched but only shown as a collapsed sum — <code>feat/conversational-copilot</code>'s <code>/claudefuel.why</code> already exposes richer detail over a versioned snapshot API. <code>/claudefuel.configure</code> is a shipped, documented stub with zero config keys wired until <code>feat/configure-foundation</code> lands. No <code>$COLUMNS</code>/terminal-width awareness exists anywhere. No timing instrumentation exists in <code>/claudefuel.doctor</code> on any branch, including the performance-focused ones.</p>
+  <p>Hard constraints: ADR-0003 (bash+jq+curl only, no daemon/plugin runtime/TUI editor; customization limited to thresholds/ordering/show-hide/presets), ADR-0004 (predictions must be pure functions of one snapshot), and a named "cliffs" taxonomy of 7 triggers that would force a rewrite. External research found direct competitors (ccstatusline, Claude-Code-Usage-Monitor) already shipping historical charts, per-number provenance labeling, and Sonnet/Opus split — and confirmed user sentiment ("flying blind," "I built a status light for Claude Code" — 3.4k upvotes) strongly favors ambient, glanceable, honest indicators over raw numbers.</p>
+</section>
+
+<section id="axes">
+  <h2>Topic Axes</h2>
+  <ul class="axis-list">
+    <li><span class="axis-name">New data &amp; widgets</span> — what new information could be surfaced on the bar</li>
+    <li><span class="axis-name">Alarm &amp; failure-state design</span> — how severity escalates, how staleness/failure is made visible</li>
+    <li><span class="axis-name">Prediction &amp; decision support</span> — burn-rate, time-to-empty, cap-ETA extensions</li>
+    <li><span class="axis-name">Multi-account / fleet visibility</span> — cross-profile awareness, the "spare tank" problem</li>
+    <li><span class="axis-name">Render mechanics &amp; performance</span> — async rendering, timer-driven refresh, latency budgets, offline handling</li>
+  </ul>
+  <p style="max-width:none; color:var(--text-muted); font-size:0.9rem;">Multi-account/fleet and Prediction &amp; decision support have <strong>zero novel survivors</strong> below — not a coverage gap, but because both axes are already fully addressed by <code>feat/cross-profile-headroom</code> and <code>feat/burn-radar</code>.</p>
+</section>
+
+<section id="ranked-ideas">
+  <h2>Ranked Ideas</h2>
+  <p style="max-width:none; color:var(--text-muted); font-size:0.9rem;">Only 4 survived — fewer than the usual 5-7 target. That's reported honestly rather than padded: nearly everything the fresh ideation pass reached for already exists as unmerged, tested code (see Headline Finding above). These 4 are the gaps that remain even after crediting the existing branches.</p>
+  <div class="jumplist">
+    <a href="#idea-1">1. Doctor Latency Instrumentation</a>
+    <a href="#idea-2">2. Config Self-Report</a>
+    <a href="#idea-3">3. Severity Beyond Hue</a>
+    <a href="#idea-4">4. Rate-of-Change Severity</a>
+  </div>
+
+  <article class="idea" id="idea-1">
+    <div class="idea-head">
+      <span class="idea-id">1</span>
+      <h3 class="idea-title">/claudefuel.doctor Latency Instrumentation</h3>
+      <span class="idea-axis-chip">Render mechanics &amp; performance</span>
+    </div>
+    <p>Add per-fetch timing (drift / OAuth refresh / usage / account / prepaid) to <code>/claudefuel.doctor</code>, so the render-path work already done on <code>feat/never-block-render</code> has a regression gate. Right now nothing on any branch measures render latency — the ~23s worst-case figure this session confirmed is only known from reading timeouts, never from an actual timed run.</p>
+    <dl class="idea-meta">
+      <dt>Basis</dt><dd><span class="basis-tag">direct:</span> confirmed via search — no timing/latency instrumentation exists in <code>claudefuel.doctor.md</code> on this branch or on any of the 7 sibling feature branches.</dd>
+      <dt>Rationale</dt><dd>Without this, the performance fix in <code>feat/never-block-render</code> has no before/after measurement and future regressions are undetectable — it's the missing feedback loop that makes that branch's claims verifiable rather than anecdotal.</dd>
+      <dt>Downsides</dt><dd>Adds a small amount of doctor-only code; needs to avoid adding runtime cost to the hot render path itself (all instrumentation should live in the diagnostic surface, not the per-prompt render).</dd>
+      <dt>Confidence</dt><dd><span class="pill conf-high">High — 85%</span></dd>
+      <dt>Complexity</dt><dd>Small</dd>
+    </dl>
+  </article>
+
+  <article class="idea" id="idea-2">
+    <div class="idea-head">
+      <span class="idea-id">2</span>
+      <h3 class="idea-title">Config Self-Report for Support at Scale</h3>
+      <span class="idea-axis-chip">Render mechanics &amp; performance (diagnostics)</span>
+    </div>
+    <p>Once <code>feat/configure-foundation</code>'s config loader ships, extend <code>/claudefuel.doctor</code> to emit one copy-pasteable line — effective config, version, profile hash — designed for pasting into a GitHub issue. As soon as real config keys exist, "what config is actually in effect on this user's machine" becomes an unanswerable-by-the-maintainer question without it.</p>
+    <dl class="idea-meta">
+      <dt>Basis</dt><dd><span class="basis-tag">reasoned:</span> <code>claudefuel.json</code> is user-owned and never touched by install/update — the moment <code>/claudefuel.configure</code> ships its first real key (via <code>feat/configure-foundation</code>), config drift becomes a live support cost with no diagnostic surface today.</dd>
+      <dt>Rationale</dt><dd>Cheap to build now, expensive to retrofit once users have diverse configs in the wild and bug reports start arriving without enough context to reproduce them.</dd>
+      <dt>Downsides</dt><dd>Sequencing matters — there's nothing to report until <code>feat/configure-foundation</code> actually merges, so this should ship alongside or just after it, not before.</dd>
+      <dt>Confidence</dt><dd><span class="pill conf-high">Medium-High — 75%</span></dd>
+      <dt>Complexity</dt><dd>Small</dd>
+    </dl>
+  </article>
+
+  <article class="idea" id="idea-3">
+    <div class="idea-head">
+      <span class="idea-id">3</span>
+      <h3 class="idea-title">Severity Beyond Hue (WCAG-safe glyph pairing)</h3>
+      <span class="idea-axis-chip">Alarm &amp; failure-state design</span>
+    </div>
+    <p><code>feat/calm-cockpit</code>'s <code>build_bar</code> was checked directly and still resolves severity through <code>bar_color</code> alone — hue is still the only severity channel even on the branch named for "progressive alarm as structure, not hue." Pair each severity tier with a fixed glyph or shape (not just color) so severity survives colorblindness and inconsistent terminal color profiles.</p>
+    <dl class="idea-meta">
+      <dt>Basis</dt><dd><span class="basis-tag">direct:</span> read <code>feat/calm-cockpit</code>'s own diff — <code>bar_color</code> assignment (red/yellow/orange/green) is unchanged from main; no glyph or shape pairing was added. <span class="basis-tag">external:</span> WCAG 1.4.1 requires color never be the sole signal.</dd>
+      <dt>Rationale</dt><dd>This is a real, currently-unaddressed accessibility gap even after crediting the branch whose name suggests it should already be fixed — worth flagging precisely because the branch name is misleading about what it actually delivers.</dd>
+      <dt>Downsides</dt><dd>Frame this as a refinement PR on top of <code>feat/calm-cockpit</code>, not a new standalone feature — building it in isolation would conflict with that branch's changes to the same function.</dd>
+      <dt>Confidence</dt><dd><span class="pill conf-medium">Medium — 65%</span></dd>
+      <dt>Complexity</dt><dd>Small</dd>
+    </dl>
+  </article>
+
+  <article class="idea" id="idea-4">
+    <div class="idea-head">
+      <span class="idea-id">4</span>
+      <h3 class="idea-title">Rate-of-Change Severity</h3>
+      <span class="idea-axis-chip">Alarm &amp; failure-state design</span>
+    </div>
+    <p>None of the 7 branches address velocity: an account sitting steady at 40% and one that just jumped 15 points in the last render look visually identical today, because <code>build_bar</code>'s hue is purely a function of absolute percentage. This is presented as a flagged architectural question, not a ready-to-build feature.</p>
+    <dl class="idea-meta">
+      <dt>Basis</dt><dd><span class="basis-tag">reasoned:</span> computing rate-of-change requires comparing the current snapshot against a prior one — a form of cross-render state ADR-0004 currently forbids for predictive features. ADR-0004 also explicitly names "instantaneous burn rate" as an already-considered-and-rejected idea for exactly this reason.</dd>
+      <dt>Rationale</dt><dd>The blind spot is real, but building it without an explicit ADR ruling would silently re-open a question the team already closed once. Worth surfacing as a deliberate "should we grant a narrow, scoped exception" decision, not as a backlog item to just build.</dd>
+      <dt>Downsides</dt><dd>Architecturally contested by design — do not implement without first getting an explicit ADR-0004 amendment or a documented exception.</dd>
+      <dt>Confidence</dt><dd><span class="pill conf-low">Low-Medium — 40%</span></dd>
+      <dt>Complexity</dt><dd>Medium</dd>
+    </dl>
+    <div class="tension-flag">ADR-0004 tension — do not build without an explicit team ruling on the no-cross-render-state constraint.</div>
+  </article>
+</section>
+
+<section id="rejection-summary">
+  <h2>Rejection Summary</h2>
+  <table>
+    <thead><tr><th>#</th><th>Idea</th><th>Reason Rejected</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Loud Failure State, Provenance &amp; Staleness Watermark, Idle Countdown Freshness Marker, Config-Absence Discoverability Nudge</td><td>Duplicates <code>feat/honest-instrument</code>'s already-built "stale markers, failure trailhead" territory.</td></tr>
+      <tr><td>2</td><td>Async/Parallel Fetch, Offline Guard Parity</td><td>Duplicates <code>feat/never-block-render</code>, which already implements cache-first paint, detached refresh, and full <code>CLAUDEFUEL_OFFLINE</code> coverage (verified all 3 call sites).</td></tr>
+      <tr><td>3</td><td>Cross-Profile Spare-Tank Glance</td><td>Duplicates <code>feat/cross-profile-headroom</code>'s shipped <code>/claudefuel.fleet</code> skill (256 lines of tests). Verifier also found the "5-frame convergence" behind this idea was one dossier fact restated five ways, not independent discovery.</td></tr>
+      <tr><td>4</td><td>Config Foundation: Severity Ladder as First Config Key</td><td>Duplicates <code>feat/configure-foundation</code>, which already wires exactly this (<code>severity_color()</code> shared ladder + jq-merge config loader, confirmed).</td></tr>
+      <tr><td>5</td><td>Cap-ETA Decision Chip, Reservoir Drawdown Curve, Attention Countdown</td><td>Duplicates <code>feat/burn-radar</code>'s pace chip / time-at-pace / steer-to framing. The latter two additionally fail verification on their own terms — both assert "single-snapshot compliant" without showing the arithmetic, risking a silent re-opening of the already-rejected instantaneous-burn-rate cliff.</td></tr>
+      <tr><td>6</td><td>Token Breakdown via Trailhead Drill-Down, Doctor "Why Is This Red" Narration</td><td>Duplicates <code>feat/conversational-copilot</code>'s shipped <code>/claudefuel.why</code> skill over a versioned snapshot API.</td></tr>
+      <tr><td>7</td><td>claudefuel Self-Health Signal</td><td>Unjustified — no direct citation of an actual observed keychain/cache-write failure; reads as an invented problem.</td></tr>
+      <tr><td>8</td><td>Terminal-Width-Aware Adaptive Rendering</td><td>Basis undermined by an unaddressed technical constraint: a statusline hook process may not have a controlling tty exposing <code>$COLUMNS</code> in all launch contexts, which the idea never addresses.</td></tr>
+      <tr><td>9</td><td>Bounded Rolling Sparkline Log</td><td>Self-flagged ADR-0003/cliffs tension (persistent history) without adequate scoping — no cap/rotation spec, no clear fit inside ADR-0003's named customization axes. Deferred, not duplicate.</td></tr>
+      <tr><td>10</td><td>Foreground /claudefuel.watch Skill</td><td>Functionally "a daemon the user manually starts and manages" — the same class of ongoing-process risk ADR-0003 exists to avoid; a distinction without a difference as argued.</td></tr>
+      <tr><td>11</td><td>Cross-cutting syntheses (Unified Severity Primitive, Render Performance Epic, Decision-Support Expansion, Trailhead Surface Family)</td><td>All four bundle ideas that individually duplicate existing branches; the underlying epics they describe are, in substance, what the corresponding feature branches already are.</td></tr>
+      <tr><td>-</td><td>axis: Multi-account/fleet visibility</td><td>Zero novel survivors — fully covered by <code>feat/cross-profile-headroom</code>, a deliberate build-vs-ideate gap, not a coverage failure.</td></tr>
+      <tr><td>-</td><td>axis: Prediction &amp; decision support</td><td>Zero novel survivors — fully covered by <code>feat/burn-radar</code>, a deliberate build-vs-ideate gap, not a coverage failure.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<footer class="composition-signal">Composed 2026-07-01 by ce-ideate from a fresh-pass ideation run (5-agent frame fleet + 5 evidence scouts + fresh-context basis verifier) over the claudefuel repository at <code>/Users/florianriquelme/Repos/mine/claudefuel</code>, branch <code>fix/update-flow-review-findings</code>.</footer>
+
+</div>

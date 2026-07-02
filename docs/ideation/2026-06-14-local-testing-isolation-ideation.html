@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claudefuel — Local Testing Isolation Ideation (2026-06-14)</title>
+<style>
+  :root { --ink:#1b1f24; --muted:#5b6573; --line:#e3e8ee; --accent:#0b6e4f; --warn:#9a3b2f; --bg:#fbfcfd; --code:#f3f5f8; }
+  * { box-sizing:border-box; }
+  body { font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         color:var(--ink); background:var(--bg); margin:0; padding:0 20px 80px; }
+  main { max-width:860px; margin:0 auto; }
+  h1 { font-size:1.7rem; margin:2.2rem 0 .2rem; line-height:1.25; }
+  .sub { color:var(--muted); margin:0 0 1.6rem; }
+  h2 { font-size:1.25rem; margin:2.4rem 0 .6rem; padding-top:1rem; border-top:1px solid var(--line); }
+  h3 { font-size:1.05rem; margin:1.4rem 0 .3rem; }
+  code { background:var(--code); padding:.1em .35em; border-radius:4px; font-size:.88em;
+         font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  pre { background:var(--code); padding:14px 16px; border-radius:8px; overflow:auto; font-size:.82rem;
+        line-height:1.45; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .axes { display:flex; flex-wrap:wrap; gap:8px; margin:.6rem 0 0; padding:0; list-style:none; }
+  .axes li { background:#eef4f1; border:1px solid #d4e4dc; color:#2a5345; border-radius:999px;
+             padding:3px 11px; font-size:.8rem; }
+  .idea { border:1px solid var(--line); border-radius:10px; padding:4px 20px 14px; margin:1.1rem 0; background:#fff; }
+  .idea h3 { display:flex; align-items:baseline; gap:.5rem; }
+  .rank { color:var(--accent); font-variant-numeric:tabular-nums; }
+  .tag { font-size:.7rem; text-transform:uppercase; letter-spacing:.04em; padding:2px 8px; border-radius:5px;
+         background:#eef4f1; color:var(--accent); font-weight:600; }
+  .axis-tag { font-size:.72rem; color:var(--muted); font-weight:400; letter-spacing:0; }
+  dl { margin:.5rem 0 0; }
+  dt { font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-top:.7rem; }
+  dd { margin:.1rem 0 0; }
+  .basis { font-family:ui-monospace,monospace; font-size:.82rem; }
+  .rejected td { vertical-align:top; padding:8px 12px 8px 0; border-bottom:1px solid var(--line); }
+  .rejected { border-collapse:collapse; width:100%; }
+  .rejected th { text-align:left; font-size:.72rem; text-transform:uppercase; color:var(--muted); padding-bottom:6px; }
+  .warn { color:var(--warn); }
+  .next { background:#fff; border:1px solid var(--line); border-radius:10px; padding:6px 20px 18px; }
+  .meta { color:var(--muted); font-size:.85rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Local testing without polluting your daily-driver claudefuel</h1>
+<p class="sub">Ideation · 2026-06-14 · repo-grounded · focus: a way to test claudefuel changes locally without disturbing the released version you use every day</p>
+
+<h2>Framing</h2>
+<p>
+The grounding surfaced an important distinction the request blurs: <strong>automated testing is already isolated</strong>.
+The bats harness sets <code>CLAUDE_CONFIG_DIR="$TMP"</code> (a <code>mktemp</code> dir) and mocks the network through
+<code>CLAUDEFUEL_API_BASE</code> / <code>CLAUDEFUEL_RAW_BASE</code>, so <code>bats tests/</code> never touches your real install.
+</p>
+<p>
+The unmet need is <strong>interactive testing</strong> — actually <em>seeing</em> a dev build render in a live bar, or
+exercising the install / <code>claudefuel update</code> flow end-to-end. Today both require touching a real
+<code>CLAUDE_CONFIG_DIR</code>, and the default is <code>~/.claude</code>: your daily driver, running a <em>released</em> version.
+Pollution here is two-faced:
+</p>
+<ul>
+  <li><strong>File pollution</strong> — dev builds of <code>statusline.sh</code>, the <code>claudefuel</code> binary, and the five slash commands overwrite your stable copies and globally re-register dev-version commands.</li>
+  <li><strong>State pollution</strong> — bumping the <code>#&nbsp;claudefuel:&nbsp;vX.Y.Z</code> header to test makes <code>/claudefuel.update</code> refuse with <em>"installed is newer than the latest release"</em> (README troubleshooting #194–195). The real install's update path is left wedged.</li>
+</ul>
+<p>
+One structural gap enables both: <code>claudefuel update</code> only reconciles from upstream GitHub (release-tag-pinned).
+There is no first-class way to reconcile from the <em>working tree</em>, so the real codepath can't be driven against your branch without hand-copying files.
+</p>
+<p class="meta">
+Every idea below is weighed against the project's own <strong>Maintenance ceiling</strong> (CONTEXT.md): every code path is one the solo maintainer must test, so convention beats machinery wherever it can.
+</p>
+
+<h2>Grounding context</h2>
+<p><strong>Project shape:</strong> a Claude Code status bar (bash + jq) self-installed into <code>~/.claude/</code>: <code>statusline.sh</code>, the <code>claudefuel</code> binary, <code>commands/claudefuel.*.md</code>, and <code>cache/</code>. The maintainer both develops and daily-uses it.</p>
+<p><strong>Existing levers:</strong> <code>TARGET_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"</code> (install respects the env var); <code>API_BASE</code>/<code>RAW_BASE</code> overrides (test-only today); <code>tests/fixtures/</code>; <code>inspect_state</code> JSON; <code>setup.sh</code> profile creation (built for multi-account, not dev sandboxing).</p>
+<p><strong>Topic axes</strong> (the surface these ideas cover):</p>
+<ul class="axes">
+  <li>Target isolation — where a dev build installs</li>
+  <li>Build source — getting the working tree into the sandbox</li>
+  <li>Live rendering — seeing the bar without a real session</li>
+  <li>Lifecycle — create / reset / tear down cleanly</li>
+  <li>Guard friction — version header &amp; drift signal during dev</li>
+</ul>
+
+<h2>Survivors</h2>
+<p class="meta">Ordered by cost-to-leverage. #1 is the do-first; #2–#3 build the real end-to-end path; #4–#5 remove the live-session dependency.</p>
+
+<div class="idea">
+  <h3><span class="rank">1.</span> Sandbox-by-convention + a real-profile write guard <span class="tag">lowest cost</span></h3>
+  <p>Adopt <code>CLAUDE_CONFIG_DIR=~/.claude-cfdev</code> as the documented dev convention, and add one small guard so dev helpers refuse to write when the resolved target is the real <code>~/.claude</code>. Almost no new machinery — it formalizes a lever that already exists and makes the safe path the default path.</p>
+  <ul class="axes"><li>target isolation</li><li>guard friction</li></ul>
+  <dl>
+    <dt>Basis</dt><dd class="basis">direct: <code>TARGET_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"</code> (claudefuel:13) already keys off the env var; setup.sh already builds sibling profile dirs.</dd>
+    <dt>Why it matters</dt><dd>Solves ~80% of the pollution problem with documentation plus a few lines of guard. Honors the Maintenance ceiling better than any code-heavy option.</dd>
+    <dt>Meeting test</dt><dd>"Should the dev workflow be a convention we document, or a feature we build?" is exactly the call worth making before writing code.</dd>
+  </dl>
+</div>
+
+<div class="idea">
+  <h3><span class="rank">2.</span> <code>--from &lt;local dir&gt;</code> reconcile source <span class="tag">enabling primitive</span></h3>
+  <p>Let <code>claudefuel update</code> reconcile from a local directory (or <code>file://</code>) instead of only upstream GitHub. The tests already override <code>RAW_BASE</code>/<code>API_BASE</code> for exactly this; promote it to a first-class, human-facing flag. This is the smallest independently-shippable change that makes the <em>real</em> update/install codepath testable against your working tree.</p>
+  <ul class="axes"><li>build source</li><li>guard friction</li></ul>
+  <dl>
+    <dt>Basis</dt><dd class="basis">direct: <code>API_BASE="${CLAUDEFUEL_API_BASE:-...}"</code> / <code>RAW_BASE="${CLAUDEFUEL_RAW_BASE:-...}"</code> (claudefuel:16–17) are described in-file as "Overridable for tests."</dd>
+    <dt>Why it matters</dt><dd>Without this, "test locally" means hand-copying files — which diverges from the path users actually run. A local source closes the test/prod gap on the riskiest flow.</dd>
+    <dt>Meeting test</dt><dd>Exposing an internal test seam as a public flag has contract implications (CONTEXT.md stability contract) — worth a deliberate decision.</dd>
+  </dl>
+</div>
+
+<div class="idea">
+  <h3><span class="rank">3.</span> <code>claudefuel sandbox</code> — one-command editable install <span class="tag">full workflow</span></h3>
+  <p>A single subcommand that (a) targets a throwaway profile, (b) installs the working-tree bundle via #2, optionally <strong>symlinking</strong> <code>statusline.sh</code> so edits are live with no reinstall (like <code>npm link</code> / <code>pip install -e</code>), (c) prints the <code>CLAUDE_CONFIG_DIR=… claude</code> launch line, and (d) supports <code>--ephemeral</code> teardown. Built on #1 and #2.</p>
+  <ul class="axes"><li>target isolation</li><li>build source</li><li>lifecycle</li></ul>
+  <dl>
+    <dt>Basis</dt><dd class="basis">reasoned: composes the two existing levers (env-var target + overridable source) into the workflow the maintainer repeats on every manual test. external: editable-install precedent (npm link, pip -e).</dd>
+    <dt>Why it matters</dt><dd>Turns a multi-step ritual into one command, reused forever — compounding leverage. The symlink mode collapses the edit→see loop to zero reinstall.</dd>
+    <dt>Meeting test</dt><dd>This is a new public verb on a tool whose whole identity is minimalism — does it earn its place against the Maintenance ceiling, or is #1+#2 enough?</dd>
+  </dl>
+</div>
+
+<div class="idea">
+  <h3><span class="rank">4.</span> <code>claudefuel preview</code> — render the bar from fixtures, no session <span class="tag">no usage burn</span></h3>
+  <p>Pipe Claude Code's real statusline stdin JSON contract from <code>tests/fixtures/</code> into <code>statusline.sh</code> and print the three lines — across a state matrix (low/med/high usage, drift on/off, cap-ETA, multi-profile). No live Claude session, no API calls, no real usage burned. Think Storybook for the bar.</p>
+  <ul class="axes"><li>live rendering</li></ul>
+  <dl>
+    <dt>Basis</dt><dd class="basis">direct: <code>tests/fixtures/</code> already exists and feeds bats; the bar's input is a documented stdin JSON contract.</dd>
+    <dt>Why it matters</dt><dd>Removes the live-session dependency entirely — the fastest, cheapest, most deterministic way to eyeball rendering changes, and it never touches any profile.</dd>
+    <dt>Meeting test</dt><dd>Worth discussing whether this replaces most need for the sandbox (#3) for pure rendering work, narrowing #3's justification.</dd>
+  </dl>
+</div>
+
+<div class="idea">
+  <h3><span class="rank">5.</span> Promote <code>tests/fixtures/</code> to the shared rendering contract <span class="tag">compounding</span></h3>
+  <p>Make one fixture set the single source of truth feeding <em>both</em> bats and <code>preview</code> (#4). Every new edge case added for an automated test instantly becomes a visual preview state, and vice-versa — coverage compounds instead of forking.</p>
+  <ul class="axes"><li>live rendering</li><li>lifecycle</li></ul>
+  <dl>
+    <dt>Basis</dt><dd class="basis">direct: fixtures already drive bats. reasoned: a shared corpus prevents drift between "what we test" and "what we eyeball."</dd>
+    <dt>Why it matters</dt><dd>Low effort, high half-life. Mostly an organizing decision rather than new code.</dd>
+    <dt>Meeting test</dt><dd>A convention worth agreeing on before fixtures multiply in two incompatible shapes.</dd>
+  </dl>
+</div>
+
+<h3>How the survivors stack</h3>
+<pre>
+  #4 preview  ──uses──▶  #5 shared fixtures        (live rendering, zero session)
+       │
+       │  (rendering covered without any profile)
+       ▼
+  #1 convention + guard  ──safe target──▶  #2 --from &lt;dir&gt;  ──build source──▶  #3 sandbox
+   (do first, ~0 code)                     (smallest primitive)            (full one-command workflow)
+</pre>
+
+<h2>Rejected (with reasons)</h2>
+<table class="rejected">
+  <tr><th>Idea</th><th>Why it didn't survive</th></tr>
+  <tr><td>Containerize a throwaway <code>$HOME</code> / devcontainer so even <code>~/.claude</code> is sandboxed</td>
+      <td class="warn">Maintenance-ceiling violation. Disproportionate weight for a bash+jq tool whose entire value proposition is staying small; <code>CLAUDE_CONFIG_DIR</code> already gives 100% of the isolation a container would.</td></tr>
+  <tr><td>Git worktree per dev build</td>
+      <td>Isolates <em>source branches</em>, not the <em>install</em> — orthogonal to the stated pollution problem. (Repo already has <code>.claude/worktrees</code> for the branch-isolation need.)</td></tr>
+  <tr><td>Ephemeral self-deleting sandbox as a standalone feature</td>
+      <td>Real but minor; folded into #3 as a <code>--ephemeral</code> flag rather than its own surface.</td></tr>
+  <tr><td>"Document it in the README" as a distinct idea</td>
+      <td>Not an idea — it's the delivery vehicle for #1. Folded in.</td></tr>
+</table>
+
+<h2 id="next">Next steps</h2>
+<div class="next">
+  <p>This is ideation, not a plan. Pick one:</p>
+  <ul>
+    <li><strong>Open</strong> — read this file; nothing else needed.</li>
+    <li><strong>Brainstorm one idea</strong> — take a survivor (likely #1+#2, or #4) into <code>/ce-brainstorm</code> to pin scope and the desired-state contract precisely.</li>
+    <li><strong>Iterate</strong> — push back on the survivor set or reframing and I'll regenerate.</li>
+    <li><strong>Done</strong> — park it here.</li>
+  </ul>
+</div>
+
+</main>
+</body>
+</html>

@@ -1,7 +1,7 @@
 ---
 description: Edit claudefuel's user config conversationally (placeholder — no config keys wired yet)
 ---
-# claudefuel-skill: v0.4.5
+# claudefuel-skill: v0.4.6
 
 > **Scope:** this release ships the `/claudefuel.configure` slash-command name as part of the stability contract, but the bar does not yet read `~/.claude/claudefuel.json`. The skill will gain real settings to manage in a follow-up release. Intended scope is minor tweaks only — color thresholds, segment ordering, segment show/hide, theme presets.
 
