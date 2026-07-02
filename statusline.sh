@@ -383,6 +383,27 @@ get_oauth_token() {
     echo ""
 }
 
+# Atomic cross-process lock so only ONE statusline process — across all the
+# concurrent Claude Code sessions sharing this account — hits a given API at a
+# time. The per-account usage endpoint is rate-limited account-wide, so N open
+# sessions all refreshing at once is itself a stampede. macOS ships no flock(1),
+# so use mkdir: atomic create on every POSIX filesystem. A lock older than
+# max_hold is assumed abandoned by a crashed holder and stolen.
+# Usage: claudefuel_try_lock <lock_dir> <now_epoch> <max_hold_secs>  → 0 if acquired
+claudefuel_try_lock() {
+    local dir="$1" lock_now="$2" max_hold="$3"
+    if mkdir "$dir" 2>/dev/null; then
+        return 0
+    fi
+    local m
+    m=$(stat -c %Y "$dir" 2>/dev/null || stat -f %m "$dir" 2>/dev/null)
+    if [ -n "$m" ] && [ $(( lock_now - m )) -gt "$max_hold" ]; then
+        rm -rf "$dir" 2>/dev/null
+        mkdir "$dir" 2>/dev/null && return 0
+    fi
+    return 1
+}
+
 # ===== LINE 2 & 3: Usage limits with progress bars (cached) =====
 # Cache is per-account when CLAUDE_CONFIG_DIR is set
 cache_file="/tmp/claude/statusline-usage-cache${CACHE_SUFFIX}.json"
@@ -398,7 +419,12 @@ attempt_file="/tmp/claude/statusline-usage-attempt${CACHE_SUFFIX}"
 # (absolute epoch seconds). Poking the endpoint again before it passes keeps
 # the rate limit alive indefinitely, so honoring it is what lets usage recover.
 retryafter_file="/tmp/claude/statusline-usage-retryafter${CACHE_SUFFIX}"
-cache_max_age=60  # seconds between API calls
+usage_lock_dir="/tmp/claude/statusline-usage-fetch${CACHE_SUFFIX}.lock"
+# 5 min between API calls. The 5h/7d rate windows move slowly, so a longer TTL
+# keeps the bars current enough while cutting the endpoint's request rate — the
+# limit is per-account and shared with Claude Code's own polling and every other
+# open session, so a small footprint matters more than second-fresh numbers.
+cache_max_age=300
 mkdir -p /tmp/claude
 
 needs_refresh=true
@@ -435,8 +461,11 @@ if [ -f "$retryafter_file" ]; then
     fi
 fi
 
-# Fetch fresh data if cache is stale
-if $needs_refresh && $should_attempt; then
+# Fetch fresh data if cache is stale — but only if we win the cross-process
+# lock, so concurrent sessions don't all fire at the same deadline. A process
+# that loses the lock falls through to the stale cache below; another process
+# is already refreshing it.
+if $needs_refresh && $should_attempt && claudefuel_try_lock "$usage_lock_dir" "$now" 15; then
     touch "$attempt_file" 2>/dev/null
     token=$(get_oauth_token)
     if [ -n "$token" ] && [ "$token" != "null" ]; then
@@ -469,6 +498,7 @@ if $needs_refresh && $should_attempt; then
         fi
         rm -f "$hdr_file" 2>/dev/null
     fi
+    rm -rf "$usage_lock_dir" 2>/dev/null
 fi
 
 # Fall back to stale cache whenever we don't have fresh data — including
@@ -511,6 +541,7 @@ fi
 # Balance changes slowly, so cache for 5 min to avoid hammering the API.
 prepaid_cache_file="/tmp/claude/statusline-prepaid-cache${CACHE_SUFFIX}.json"
 prepaid_attempt_file="/tmp/claude/statusline-prepaid-attempt${CACHE_SUFFIX}"
+prepaid_lock_dir="/tmp/claude/statusline-prepaid-fetch${CACHE_SUFFIX}.lock"
 prepaid_cache_max_age=300
 prepaid_data=""
 
@@ -545,7 +576,7 @@ if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && $prepaid_should_att
     [ -z "$token" ] || [ "$token" = "null" ] && token=$(get_oauth_token)
 fi
 
-if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && $prepaid_should_attempt && [ -n "$token" ] && [ "$token" != "null" ]; then
+if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && $prepaid_should_attempt && [ -n "$token" ] && [ "$token" != "null" ] && claudefuel_try_lock "$prepaid_lock_dir" "$now" 15; then
     touch "$prepaid_attempt_file" 2>/dev/null
     # Resolve org UUID — cache long-term, it never changes
     org_cache_file="/tmp/claude/statusline-orguuid-cache${CACHE_SUFFIX}"
@@ -582,6 +613,7 @@ if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && $prepaid_should_att
         fi
         rm -f "$p_hdr" 2>/dev/null
     fi
+    rm -rf "$prepaid_lock_dir" 2>/dev/null
 fi
 
 # Fall back to stale prepaid cache

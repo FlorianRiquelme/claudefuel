@@ -31,7 +31,9 @@ setup() {
   USAGE_CACHE="/tmp/claude/statusline-usage-cache-${config_hash}.json"
   ATTEMPT_FILE="/tmp/claude/statusline-usage-attempt-${config_hash}"
   RETRYAFTER_FILE="/tmp/claude/statusline-usage-retryafter-${config_hash}"
+  USAGE_LOCK="/tmp/claude/statusline-usage-fetch-${config_hash}.lock"
   mkdir -p /tmp/claude
+  rm -rf "$USAGE_LOCK" 2>/dev/null
 
   # Fake curl: counts invocations and emits a configurable HTTP response so
   # tests can assert on retry/backoff behavior without touching the network.
@@ -74,6 +76,7 @@ EOF
 
 teardown() {
   rm -f "$USAGE_CACHE" "$ATTEMPT_FILE" "$RETRYAFTER_FILE" 2>/dev/null
+  rm -rf "$USAGE_LOCK" 2>/dev/null
   unset FAKE_HTTP_STATUS FAKE_RETRY_AFTER FAKE_BODY
   [ -n "$CLAUDE_CONFIG_DIR" ] && [ -d "$CLAUDE_CONFIG_DIR" ] && rm -rf "$CLAUDE_CONFIG_DIR"
   [ -n "$FAKE_BIN" ] && [ -d "$FAKE_BIN" ] && rm -rf "$FAKE_BIN"
@@ -109,7 +112,7 @@ age_file() {
 }
 
 @test "failed fetch falls back to stale cache instead of blanking the bars" {
-  seed_stale_usage_cache 300
+  seed_stale_usage_cache 1000
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p')
@@ -118,14 +121,14 @@ age_file() {
 }
 
 @test "failed fetch touches the attempt marker so a retry isn't immediate" {
-  seed_stale_usage_cache 300
+  seed_stale_usage_cache 1000
 
   run_bar >/dev/null
   [ -f "$ATTEMPT_FILE" ]
 }
 
 @test "second render within backoff window does not retry the network fetch" {
-  seed_stale_usage_cache 300
+  seed_stale_usage_cache 1000
 
   run_bar >/dev/null
   run_bar >/dev/null
@@ -135,7 +138,7 @@ age_file() {
 }
 
 @test "data older than the stale threshold warns when usage next updates" {
-  seed_stale_usage_cache 300
+  seed_stale_usage_cache 1000
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p')
@@ -147,7 +150,7 @@ age_file() {
   # The warning should tell the user WHEN usage can update again (the
   # Retry-After deadline as a clock time), not how old the data is.
   export FAKE_HTTP_STATUS=429 FAKE_RETRY_AFTER=600
-  seed_stale_usage_cache 300
+  seed_stale_usage_cache 1000
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p')
@@ -158,9 +161,10 @@ age_file() {
 }
 
 @test "data within the stale threshold does not render a warning" {
-  # Cache is old enough to need a refresh (>60s) but not stale enough (<180s)
-  # to warrant a warning — a failed fetch here is a one-off blip, not sustained.
-  seed_stale_usage_cache 90
+  # Cache is old enough to need a refresh (>300s) but not stale enough (<900s,
+  # i.e. 3x the cadence) to warrant a warning — a failed fetch here is a
+  # one-off blip, not sustained.
+  seed_stale_usage_cache 400
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p')
@@ -176,11 +180,35 @@ age_file() {
   [ ! -s "$CURL_CALLS_FILE" ]
 }
 
+@test "a held fetch lock blocks a concurrent refresh (no stampede across sessions)" {
+  # Simulate another session mid-fetch by pre-holding the lock. This render
+  # must skip the network and fall back to the cache instead of piling on.
+  seed_stale_usage_cache 1000
+  mkdir -p "$USAGE_LOCK"
+
+  output=$(run_bar)
+  line2=$(printf '%s' "$output" | sed -n '2p')
+
+  [ ! -s "$CURL_CALLS_FILE" ]         # did not fetch
+  [[ "$line2" == *"87%"* ]]           # still rendered cached bars
+}
+
+@test "a stale fetch lock (crashed holder) is stolen" {
+  seed_stale_usage_cache 1000
+  mkdir -p "$USAGE_LOCK"
+  age_file "$USAGE_LOCK" 30           # older than the 15s max-hold
+
+  run_bar >/dev/null
+
+  calls=$(wc -l < "$CURL_CALLS_FILE" | tr -d ' ')
+  [ "$calls" -eq 1 ]                  # stole the lock and fetched
+}
+
 @test "second render during backoff still renders the bars (no blanking)" {
   # Regression: the stale-cache fallback used to live inside the
   # should_attempt block, so once backoff kicked in the bars vanished
   # entirely on every subsequent render.
-  seed_stale_usage_cache 300
+  seed_stale_usage_cache 1000
 
   run_bar >/dev/null
   second=$(run_bar)
@@ -189,31 +217,31 @@ age_file() {
   [[ "$line2" == *"87%"* ]]
 }
 
-@test "a 429 retry-after suppresses fetches past the normal 60s cadence" {
-  # The server asked for a long cooldown. Even after the 60s attempt
-  # window elapses, we must not poke the endpoint again until the
-  # retry-after deadline passes — otherwise we keep the rate limit alive.
+@test "a 429 retry-after suppresses fetches past the normal cadence" {
+  # The server asked for a long cooldown. Even after the normal attempt
+  # window (cache_max_age) elapses, we must not poke the endpoint again until
+  # the retry-after deadline passes — otherwise we keep the rate limit alive.
   export FAKE_HTTP_STATUS=429 FAKE_RETRY_AFTER=600
-  seed_stale_usage_cache 300
+  seed_stale_usage_cache 1000
 
   run_bar >/dev/null                 # attempt 1: gets 429, records deadline
   [ -f "$RETRYAFTER_FILE" ]
-  age_file "$ATTEMPT_FILE" 120       # 60s attempt gate is now open again
+  age_file "$ATTEMPT_FILE" 400       # normal attempt gate is now open again
   run_bar >/dev/null                 # but retry-after deadline still blocks
 
   calls=$(wc -l < "$CURL_CALLS_FILE" | tr -d ' ')
   [ "$calls" -eq 1 ]
 }
 
-@test "a non-429 blip retries after the normal 60s cadence" {
+@test "a non-429 blip retries after the normal cadence" {
   # A transient network failure is not a rate limit: no retry-after
-  # deadline is recorded, so once the 60s attempt window elapses we retry.
+  # deadline is recorded, so once the attempt window elapses we retry.
   export FAKE_HTTP_STATUS=000 FAKE_BODY=
-  seed_stale_usage_cache 300
+  seed_stale_usage_cache 1000
 
   run_bar >/dev/null                 # attempt 1: empty response, no deadline
   [ ! -f "$RETRYAFTER_FILE" ]
-  age_file "$ATTEMPT_FILE" 120       # 60s window elapsed
+  age_file "$ATTEMPT_FILE" 400       # attempt window elapsed
   run_bar >/dev/null                 # should retry
 
   calls=$(wc -l < "$CURL_CALLS_FILE" | tr -d ' ')
