@@ -2,7 +2,7 @@
 # claudefuel: v0.4.6
 # Claude Code Status Line — Multi-Account Aware
 #
-# Line 1: [profile] Model | ctx <bar> <used>/<total> | thinking: on/off | effort: <level> | ↗ /claudefuel.update
+# Line 1: [profile] Model | ◈ session | ctx <bar> <used>/<total> | thinking: on/off | effort: <level> | agent: <name> | ▸ <tool> <age> | ↗ /claudefuel.update
 # Line 2: 5h: <bar> % [·age] (or ~<left> ×<ratio> when burning hot) | 7d: <bar> % | extra: <currency><balance> [·age] | ⇄ <profile> <pct>% (<age>)
 # Line 3: ↻ <time> · ~cap <range> · slow ≤<ratio>× · ⚓ <gap> | ↻ <datetime> | ↻ <date>
 #
@@ -51,6 +51,42 @@ set -o pipefail # `a | b || c` must reflect a's failure, not b's success.
 # Unset (the only production state) reads the wall clock.
 cf_now() {
     printf '%s' "${CLAUDEFUEL_NOW:-$(date +%s)}"
+}
+
+# Cross-platform ISO to epoch conversion
+# Converts ISO 8601 timestamp (e.g. "2025-06-15T12:30:00Z" or "2025-06-15T12:30:00.123+00:00") to epoch seconds.
+# Properly handles UTC timestamps and converts to local time.
+iso_to_epoch() {
+    local iso_str="$1"
+
+    # Try GNU date first (Linux) — handles ISO 8601 format automatically
+    local epoch
+    epoch=$(date -d "${iso_str}" +%s 2>/dev/null)
+    if [ -n "$epoch" ]; then
+        echo "$epoch"
+        return 0
+    fi
+
+    # BSD date (macOS) - handle various ISO 8601 formats
+    local stripped="${iso_str%%.*}"          # Remove fractional seconds (.123456)
+    stripped="${stripped%%Z}"                 # Remove trailing Z
+    stripped="${stripped%%+*}"                # Remove timezone offset (+00:00)
+    stripped="${stripped%%-[0-9][0-9]:[0-9][0-9]}"  # Remove negative timezone offset
+
+    # Check if timestamp is UTC (has Z or +00:00 or -00:00)
+    if [[ "$iso_str" == *"Z"* ]] || [[ "$iso_str" == *"+00:00"* ]] || [[ "$iso_str" == *"-00:00"* ]]; then
+        # For UTC timestamps, parse with timezone set to UTC
+        epoch=$(env TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
+    else
+        epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
+    fi
+
+    if [ -n "$epoch" ]; then
+        echo "$epoch"
+        return 0
+    fi
+
+    return 1
 }
 
 # ===== Cross-profile sibling caches (read-only) =====
@@ -164,7 +200,7 @@ claudefuel_config_report() {
         "color_thresholds": {"orange": 50, "yellow": 70, "red": 90},
         "reset_display": "clock",
         "segments": {
-          "order": {"line1": ["model","ctx","thinking","effort","drift"],
+          "order": {"line1": ["model","session","ctx","thinking","effort","agent","activity","drift"],
                     "columns": ["5h","7d","extra"]},
           "hide": []
         }
@@ -184,7 +220,7 @@ claudefuel_config_report() {
         return
     fi
     jq --argjson d "$defaults" '
-        def line1_tokens: ["model","ctx","thinking","effort","drift"];
+        def line1_tokens: ["model","session","ctx","thinking","effort","agent","activity","drift"];
         def column_tokens: ["5h","7d","extra"];
         def hide_tokens: line1_tokens + column_tokens + ["profile","cap_eta"];
         def known_keys: ["version","theme","color_thresholds","reset_display","segments"];
@@ -461,6 +497,51 @@ if [ "${1:-}" = "--validate-config" ]; then
     esac
 fi
 
+# ===== --subagent: row renderer for subagentStatusLine =====
+# Claude Code's subagentStatusLine setting runs this once per refresh
+# tick with every visible subagent row as one JSON object on stdin
+# ({tasks: [{id, name, type, status, startTime, tokenCount, ...}]}).
+# One JSON line out per row: {"id", "content"} — the agent name in a
+# stable per-task color, a status glyph, elapsed since start, token
+# count. Same doctrine as the activity segment: the payload has thin
+# format guarantees, so every parse step degrades — emitting nothing
+# keeps Claude Code's default row rendering.
+if [ "${1:-}" = "--subagent" ]; then
+    command -v jq >/dev/null 2>&1 || exit 0
+    sub_input=$(cat)
+    [ -n "$sub_input" ] || exit 0
+    printf '%s' "$sub_input" | jq -c --argjson now "$(cf_now)" '
+        def tokfmt: if . >= 1000000 then "\(. / 100000 | floor / 10)m"
+          elif . >= 1000 then "\(. / 1000 | round)k" else tostring end;
+        def agefmt: if . < 60 then "\(.)s" elif . < 3600 then "\(. / 60 | floor)m"
+          else "\(. / 3600 | floor)h" end;
+        def glyph: {running: "▸", in_progress: "▸", pending: "·",
+                    completed: "✓", success: "✓", failed: "✗", error: "✗"}[.] // "·";
+        def hue: (explode | add) % 5
+          | ["[38;2;0;153;255m", "[38;2;46;149;153m",
+             "[38;2;0;160;0m", "[38;2;230;200;0m",
+             "[38;2;255;176;85m"][.];
+        def start2epoch:
+          if type == "number" then (if . > 1000000000000 then . / 1000 | floor else floor end)
+          elif type == "string" then (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")
+            | try (strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch null)
+          else null end;
+        (.tasks // [])[]
+        | . as $t
+        | (($t.id // "") | tostring) as $id
+        | select($id != "")
+        | (($t.name // $t.type // "agent") | tostring) as $name
+        | (($t.startTime // null) | start2epoch) as $started
+        | (if $started == null then ""
+           else " \((($now - $started) | if . < 0 then 0 else . end) | agefmt)" end) as $age
+        | (if (($t.tokenCount // 0) | type) == "number" and ($t.tokenCount // 0) > 0
+           then " · \($t.tokenCount | tokfmt)" else "" end) as $tok
+        | {id: $id,
+           content: "\($id | hue)\($name)[0m \((($t.status // "") | tostring) | glyph)\($age)\($tok)"}
+    ' 2>/dev/null
+    exit 0
+fi
+
 # ===== --demo <state>: first-class preview renders =====
 # `statusline.sh --demo healthy|warning|critical|stale|offline` renders
 # the full bar from canned built-in data for that state — no stdin, no
@@ -570,7 +651,7 @@ cfg_th_orange=50
 cfg_th_yellow=70
 cfg_th_red=90
 cfg_reset_display="clock"
-cfg_line1_order="model ctx thinking effort drift"
+cfg_line1_order="model session ctx thinking effort agent activity drift"
 cfg_columns_order="5h 7d extra"
 cfg_hide=""
 
@@ -588,7 +669,7 @@ if [ -f "$config_file" ]; then
         "cfg_th_yellow=" + num((.color_thresholds.yellow)?; 70),
         "cfg_th_red=" + num((.color_thresholds.red)?; 90),
         "cfg_reset_display=" + (((.reset_display)? // "clock") | tostring | @sh),
-        "cfg_line1_order=" + toks((.segments.order.line1)?; ["model","ctx","thinking","effort","drift"]),
+        "cfg_line1_order=" + toks((.segments.order.line1)?; ["model","session","ctx","thinking","effort","agent","activity","drift"]),
         "cfg_columns_order=" + toks((.segments.order.columns)?; ["5h","7d","extra"]),
         "cfg_hide=" + toks((.segments.hide)?; [])
     ' "$config_file" 2>/dev/null) && eval "$cfg_assignments"
@@ -685,6 +766,13 @@ thinking_val=$(echo "$input" | jq -r '.thinking.enabled // false')
 # Reasoning effort level (live session state from stdin — reflects /effort changes).
 # Absent when the current model does not support the effort parameter.
 effort_level=$(echo "$input" | jq -r '.effort.level // empty')
+
+# The "Now" layer inputs: session identity, subagent context, and the
+# transcript path for the live-activity segment. All conditional fields.
+session_id=$(echo "$input" | jq -r '.session_id // empty')
+session_name=$(echo "$input" | jq -r '.session_name // empty')
+agent_name=$(echo "$input" | jq -r '.agent.name // empty')
+transcript_path=$(echo "$input" | jq -r '.transcript_path // empty')
 
 # ===== Native-first usage source (stdin rate_limits) =====
 # Conditional field (older Claude Code and non-subscription auth omit it)
@@ -826,6 +914,73 @@ segment_effort() {
     printf '%s' "effort: ${cyan}${effort_level}${reset}"
 }
 
+# ===== The "Now" layer: what Claude is doing, not just what it costs =====
+
+# Session identity chip — `◈ <name>` in a stable per-session color, so
+# parallel panes are distinguishable at a glance. Prefers session_name
+# (set via --name or /rename); falls back to a short session_id stem.
+# Color = hash of session_id into a fixed 5-hue palette (red excluded:
+# hue there means alarm). Pure stdin, zero cost.
+segment_session() {
+    local label="$session_name"
+    [ -n "$label" ] || label="${session_id:0:6}"
+    [ -n "$label" ] || return 0
+    local palette=("$blue" "$cyan" "$green" "$yellow" "$orange")
+    local h
+    h=$(printf '%s' "${session_id:-$label}" | cksum | awk '{print $1}')
+    printf '%s' "${palette[$(( h % 5 ))]}◈ ${label}${reset}"
+}
+
+# Subagent context — `agent: <name>` when this render belongs to a
+# subagent session. Absent otherwise.
+segment_agent() {
+    [ -n "$agent_name" ] || return 0
+    printf '%s' "agent: ${cyan}${agent_name}${reset}"
+}
+
+# Live activity — `▸ <tool> <age>`: the most recent tool_use in the
+# transcript tail that has no matching tool_result yet (i.e. what Claude
+# is doing right now), plus elapsed time since it started. Best-effort
+# by doctrine: the transcript JSONL has no public format spec, so every
+# parse step degrades to rendering nothing. Reads only the last 16KB —
+# O(tail), never the whole file. Dormant once the pending call is older
+# than 10 minutes (no longer credibly "now").
+segment_activity() {
+    [ -n "$transcript_path" ] && [ -f "$transcript_path" ] || return 0
+    local pending
+    pending=$(tail -c 16384 "$transcript_path" 2>/dev/null | jq -Rr '
+        fromjson? | objects
+        | .timestamp as $ts
+        | ((.message.content)? // empty)
+        | if type == "array" then .[] else empty end
+        | objects
+        | if .type == "tool_use" then "use\t\(.id // "")\t\(.name // "")\t\($ts // "")"
+          elif .type == "tool_result" then "done\t\(.tool_use_id // "")\t\t"
+          else empty end
+    ' 2>/dev/null | awk -F'\t' '
+        $1 == "use"  { name[$2] = $3; ts[$2] = $4; order[++n] = $2 }
+        $1 == "done" { delete name[$2] }
+        END { for (i = n; i >= 1; i--) if (order[i] in name) {
+                  printf "%s\t%s\n", name[order[i]], ts[order[i]]; exit } }
+    ')
+    [ -n "$pending" ] || return 0
+
+    local tool="${pending%%$'\t'*}" ts="${pending#*$'\t'}"
+    [ -n "$tool" ] || return 0
+    local chip="▸ ${tool}"
+    if [ -n "$ts" ]; then
+        local epoch elapsed
+        epoch=$(iso_to_epoch "$ts")
+        if [ -n "$epoch" ]; then
+            elapsed=$(( $(cf_now) - epoch ))
+            [ "$elapsed" -lt 0 ] && elapsed=0
+            [ "$elapsed" -gt 600 ] && return 0
+            chip+=" $(claudefuel_format_age "$elapsed")"
+        fi
+    fi
+    printf '%s' "${orange}${chip}${reset}"
+}
+
 segment_drift() {
     # Demo renders are deterministic: the user's real version cache must
     # not leak a ↗ signal into a golden render.
@@ -853,7 +1008,7 @@ segment_drift() {
 
 line1=""
 for seg in $cfg_line1_order; do
-    case "$seg" in model|ctx|thinking|effort|drift) ;; *) continue ;; esac
+    case "$seg" in model|session|ctx|thinking|effort|agent|activity|drift) ;; *) continue ;; esac
     segment_hidden "$seg" && continue
     seg_out=$("segment_${seg}")
     [ -z "$seg_out" ] && continue
@@ -1340,42 +1495,6 @@ if [ -n "$demo_state" ]; then
 fi
 
 cf_timing_mark prepaid
-
-# Cross-platform ISO to epoch conversion
-# Converts ISO 8601 timestamp (e.g. "2025-06-15T12:30:00Z" or "2025-06-15T12:30:00.123+00:00") to epoch seconds.
-# Properly handles UTC timestamps and converts to local time.
-iso_to_epoch() {
-    local iso_str="$1"
-
-    # Try GNU date first (Linux) — handles ISO 8601 format automatically
-    local epoch
-    epoch=$(date -d "${iso_str}" +%s 2>/dev/null)
-    if [ -n "$epoch" ]; then
-        echo "$epoch"
-        return 0
-    fi
-
-    # BSD date (macOS) - handle various ISO 8601 formats
-    local stripped="${iso_str%%.*}"          # Remove fractional seconds (.123456)
-    stripped="${stripped%%Z}"                 # Remove trailing Z
-    stripped="${stripped%%+*}"                # Remove timezone offset (+00:00)
-    stripped="${stripped%%-[0-9][0-9]:[0-9][0-9]}"  # Remove negative timezone offset
-
-    # Check if timestamp is UTC (has Z or +00:00 or -00:00)
-    if [[ "$iso_str" == *"Z"* ]] || [[ "$iso_str" == *"+00:00"* ]] || [[ "$iso_str" == *"-00:00"* ]]; then
-        # For UTC timestamps, parse with timezone set to UTC
-        epoch=$(env TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
-    else
-        epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
-    fi
-
-    if [ -n "$epoch" ]; then
-        echo "$epoch"
-        return 0
-    fi
-
-    return 1
-}
 
 # Resolve a stdin rate_limits resets_at value to epoch seconds. The
 # documented shape is a unix epoch (digits pass through untouched — no

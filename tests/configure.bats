@@ -432,7 +432,7 @@ validate() {
   # validate report's effective block equals the absent-file effective.
   seed_usage_cache
   baseline=$(run_bar)
-  write_config '{"version":1,"theme":"default","color_thresholds":{"orange":50,"yellow":70,"red":90},"reset_display":"clock","segments":{"order":{"line1":["model","ctx","thinking","effort","drift"],"columns":["5h","7d","extra"]},"hide":[]}}'
+  write_config '{"version":1,"theme":"default","color_thresholds":{"orange":50,"yellow":70,"red":90},"reset_display":"clock","segments":{"order":{"line1":["model","session","ctx","thinking","effort","agent","activity","drift"],"columns":["5h","7d","extra"]},"hide":[]}}'
   configured=$(run_bar)
   [ "$baseline" = "$configured" ]
 

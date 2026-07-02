@@ -30,7 +30,9 @@ Presets are expanded by *this skill* into concrete schema-v1 keys at write time 
 |---|---|
 | "calmer", "less alarming", "stop yelling at me" | raise `color_thresholds` (e.g. 70/85/95) — show current values first |
 | "warn me earlier", "more cautious" | lower `color_thresholds` (e.g. 40/60/80) |
-| "minimal", "less clutter", "just the essentials" | **preset `minimal`**: `hide: ["thinking","effort","profile","extra","drift"]` — warn: hiding `drift` silences release notices |
+| "minimal", "less clutter", "just the essentials" | **preset `minimal`**: `hide: ["thinking","effort","profile","extra","drift","session","activity"]` — warn: hiding `drift` silences release notices |
+| "what is Claude doing", "live activity", "hide the spinner" | show/hide `activity` (`▸ Bash 12s` from the transcript tail) |
+| "which session is this", "label my panes" | show/hide `session`; suggest `/rename` to give the session a real name |
 | "everything", "back to normal", "reset" | delete overrides — restore defaults (`{"version":1}` or remove the file) |
 | "no colors", "colorblind", "accessible", "grayscale" | `theme: "mono"` (structural alarms carry severity without hue) |
 | "countdown", "how long until reset" | `reset_display: "countdown"` |
@@ -50,7 +52,7 @@ All keys optional; absent keys use the default. Write **sparse**: `"version": 1`
 | `theme` | `"default"` | `"default"` (truecolor) or `"mono"` (no hues). |
 | `color_thresholds.{orange,yellow,red}` | `50`/`70`/`90` | Utilization % where bars change color (below orange: green). One ladder shared by ctx/5h/7d. |
 | `reset_display` | `"clock"` | Line 3 style: `"clock"` (`↻ 5:30pm`) or `"countdown"` (`↻ in 42m`). |
-| `segments.order.line1` | `["model","ctx","thinking","effort","drift"]` | Line 1 order. |
+| `segments.order.line1` | `["model","session","ctx","thinking","effort","agent","activity","drift"]` | Line 1 order. `session` = identity chip (`◈ name`), `agent` = subagent badge, `activity` = live tool call (`▸ Bash 12s`). |
 | `segments.order.columns` | `["5h","7d","extra"]` | Column order for Lines 2 **and** 3 (Line 3 mirrors Line 2). |
 | `segments.hide` | `[]` | Any order token above, plus hide-only `"profile"` (the `[name]` badge) and `"cap_eta"` (the `~cap` range, ADR-0004). |
 
