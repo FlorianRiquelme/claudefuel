@@ -125,6 +125,8 @@ claudefuel_known_profile_caches() {
 #   3. best sibling governing pct <= active - 20 (meaningful headroom)
 # Usage: claudefuel_switch_hint <active_governing_pct> <active_cache_file>
 claudefuel_switch_hint() {
+    # Demo renders never read the user's real sibling caches.
+    [ -n "$demo_state" ] && return 0
     local active_pct=$1 active_cache=$2
     [ "$active_pct" -ge 80 ] 2>/dev/null || return 0
 
@@ -145,6 +147,123 @@ claudefuel_switch_hint() {
     [ "$best_pct" -le $(( active_pct - 20 )) ] || return 0
 
     printf "⇄ %s %s%% (%s)" "$best_label" "$best_pct" "$(claudefuel_format_age "$best_age")"
+}
+
+# ===== Config report: shared merge/lint of claudefuel.json =====
+# Emits {status, errors, warnings, info, effective, overridden_keys} for
+# a config path. The single source of truth for "what does this config
+# mean" outside the render loader: --validate-config wraps it for humans
+# and skills; --snapshot embeds it so /claudefuel.why can answer "why is
+# my bar red at 75%?" with "your color_thresholds.red is 70". The
+# defaults and merge semantics here MUST mirror the render loader below
+# (tests/render-demo.bats asserts the agreement).
+claudefuel_config_report() {
+    local path="$1"
+    local defaults='{
+        "version": 1, "theme": "default",
+        "color_thresholds": {"orange": 50, "yellow": 70, "red": 90},
+        "reset_display": "clock",
+        "segments": {
+          "order": {"line1": ["model","ctx","thinking","effort","drift"],
+                    "columns": ["5h","7d","extra"]},
+          "hide": []
+        }
+      }'
+    if [ ! -f "$path" ]; then
+        jq -n --argjson d "$defaults" \
+            '{status: "absent", errors: [], warnings: [], info: [],
+              effective: $d, overridden_keys: []}'
+        return
+    fi
+    if ! jq -e . "$path" >/dev/null 2>&1; then
+        local parse_err
+        parse_err=$(jq . "$path" 2>&1 >/dev/null | head -n1)
+        jq -n --argjson d "$defaults" --arg e "${parse_err:-invalid JSON}" \
+            '{status: "malformed", errors: [$e], warnings: [], info: [],
+              effective: $d, overridden_keys: []}'
+        return
+    fi
+    jq --argjson d "$defaults" '
+        def line1_tokens: ["model","ctx","thinking","effort","drift"];
+        def column_tokens: ["5h","7d","extra"];
+        def hide_tokens: line1_tokens + column_tokens + ["profile","cap_eta"];
+        def known_keys: ["version","theme","color_thresholds","reset_display","segments"];
+
+        # Nearest-match hint for a mistyped token, prefix-based ("7day" →
+        # "7d", "profil" → "profile"); falls back to listing valid tokens.
+        def suggest($tok; $valid):
+          ([$valid[] | . as $v
+            | select(($tok | startswith($v)) or ($v | startswith($tok)))] | first) as $s
+          | if $s == null then "valid tokens: " + ($valid | join(", "))
+            else "did you mean \"" + $s + "\"?" end;
+
+        (if type == "object" then . else {} end) as $cfg
+        | {
+            version: ((($cfg.version)? | tonumber? // 1) | floor),
+            theme: ((($cfg.theme)? // "default") | tostring),
+            color_thresholds: {
+              orange: ((($cfg.color_thresholds.orange)? | tonumber? // 50) | floor),
+              yellow: ((($cfg.color_thresholds.yellow)? | tonumber? // 70) | floor),
+              red:    ((($cfg.color_thresholds.red)?    | tonumber? // 90) | floor)
+            },
+            reset_display: ((($cfg.reset_display)? // "clock") | tostring),
+            segments: {
+              order: {
+                line1: ((($cfg.segments.order.line1)? // $d.segments.order.line1)
+                        | if type == "array" then map(tostring) else $d.segments.order.line1 end),
+                columns: ((($cfg.segments.order.columns)? // $d.segments.order.columns)
+                        | if type == "array" then map(tostring) else $d.segments.order.columns end)
+              },
+              hide: ((($cfg.segments.hide)? // [])
+                     | if type == "array" then map(tostring) else [] end)
+            }
+          } as $eff
+        | ([ ["theme"], ["color_thresholds","orange"], ["color_thresholds","yellow"],
+             ["color_thresholds","red"], ["reset_display"],
+             ["segments","order","line1"], ["segments","order","columns"],
+             ["segments","hide"] ]
+           | map(select(. as $p | (($cfg | getpath($p))? // null) != null) | join("."))
+          ) as $overridden
+        | (
+            (if type != "object" then ["config is not a JSON object — defaults used"] else [] end)
+            + (if $eff.version != 1
+               then ["unsupported version \($eff.version) — this build understands version 1"] else [] end)
+            + ([ "orange", "yellow", "red" ] | map(
+                (($cfg.color_thresholds[.])? // null) as $v
+                | if $v == null then empty
+                  elif ($v | type) != "number" and (($v | tonumber?) == null)
+                  then "color_thresholds.\(.) is not a number — default used"
+                  elif ($v | tonumber) < 0 or ($v | tonumber) > 100
+                  then "color_thresholds.\(.) is outside 0–100"
+                  else empty end))
+            + (if $eff.color_thresholds.orange >= $eff.color_thresholds.yellow
+                  or $eff.color_thresholds.yellow >= $eff.color_thresholds.red
+               then ["color_thresholds out of order — expected orange < yellow < red (the bar tolerates it, but severity colors will overlap)"]
+               else [] end)
+            + (if ["default","mono"] | index($eff.theme) | not
+               then ["unknown theme \"\($eff.theme)\" — default palette used"] else [] end)
+            + (if ["clock","countdown"] | index($eff.reset_display) | not
+               then ["unknown reset_display \"\($eff.reset_display)\" — clock used"] else [] end)
+            + (((($cfg.segments.order.line1)? // null) | if . != null and (type != "array") then ["segments.order.line1 is not an array — default used"] else [] end))
+            + (((($cfg.segments.order.columns)? // null) | if . != null and (type != "array") then ["segments.order.columns is not an array — default used"] else [] end))
+            + (((($cfg.segments.hide)? // null) | if . != null and (type != "array") then ["segments.hide is not an array — default used"] else [] end))
+            + ($eff.segments.order.line1 | map(select(. as $t | line1_tokens | index($t) | not)
+                | . as $t | "unknown token \"\($t)\" in segments.order.line1 — " + suggest($t; line1_tokens)))
+            + ($eff.segments.order.columns | map(select(. as $t | column_tokens | index($t) | not)
+                | . as $t | "unknown token \"\($t)\" in segments.order.columns — " + suggest($t; column_tokens)))
+            + ($eff.segments.hide | map(select(. as $t | hide_tokens | index($t) | not)
+                | . as $t | "unknown token \"\($t)\" in segments.hide — " + suggest($t; hide_tokens)))
+          ) as $warnings
+        | ((if type == "object" then keys else [] end)
+           | map(select(. as $k | known_keys | index($k) | not)
+             | "unknown top-level key \"\(.)\" preserved (may belong to a newer version)")
+          ) as $info
+        | {
+            status: (if ($warnings | length) > 0 then "warnings" else "ok" end),
+            errors: [], warnings: $warnings, info: $info,
+            effective: $eff, overridden_keys: $overridden
+          }
+    ' "$path" 2>/dev/null
 }
 
 # ===== Fleet mode: machine-readable dump of every known profile cache =====
@@ -216,9 +335,18 @@ if [ "${1:-}" = "--snapshot" ]; then
         | sed -E 's/^# claudefuel: v//')
     snapshot_upstream=$(jq -r '.upstream_version // empty' "$snapshot_version_path" 2>/dev/null)
 
+    # v2: the config block — path, parse status, effective values,
+    # overridden keys — so /claudefuel.why can explain config-driven
+    # rendering without re-implementing the merge logic in prose.
+    snapshot_config_path="${CLAUDEFUEL_CONFIG:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claudefuel.json}"
+    snapshot_config_report=$(claudefuel_config_report "$snapshot_config_path")
+    [ -n "$snapshot_config_report" ] || snapshot_config_report="null"
+
     jq -n \
         --argjson now "$snapshot_now" \
         --arg profile "$snapshot_profile" \
+        --arg config_path "$snapshot_config_path" \
+        --argjson config_report "$snapshot_config_report" \
         --arg config_dir "${CLAUDE_CONFIG_DIR:-}" \
         --arg installed "${snapshot_installed:-}" \
         --arg upstream "${snapshot_upstream:-}" \
@@ -251,13 +379,19 @@ if [ "${1:-}" = "--snapshot" ]; then
         | (if $cap_eta == null or $resets_epoch == null then false
            else $cap_eta < $resets_epoch end) as $threshold_pass
         | {
-            schema: { name: "claudefuel-snapshot", version: 1 },
+            schema: { name: "claudefuel-snapshot", version: 2 },
             generated_at_epoch: $now,
             generated_at: ($now | todate),
             profile: {
               name: $profile,
               config_dir: (if $config_dir == "" then null else $config_dir end)
             },
+            config: (if $config_report == null then null else {
+              path: $config_path,
+              status: $config_report.status,
+              effective: $config_report.effective,
+              overridden_keys: $config_report.overridden_keys
+            } end),
             versions: {
               installed: (if $installed == "" then null else $installed end),
               upstream: (if $upstream == "" then null else $upstream end),
@@ -308,7 +442,76 @@ if [ "${1:-}" = "--snapshot" ]; then
     exit $?
 fi
 
-input=$(cat)
+# ===== --validate-config: machine-checkable config lint =====
+# `statusline.sh --validate-config [path]` prints a versioned JSON report
+# (schema "claudefuel-config-check v1") for the given path — default: the
+# resolved user config, CLAUDEFUEL_CONFIG-aware. Exit codes: 0 ok or
+# warnings, 1 malformed, 2 absent. Run by /claudefuel.doctor and by the
+# configure skill before and after every write.
+if [ "${1:-}" = "--validate-config" ]; then
+    vc_path="${2:-${CLAUDEFUEL_CONFIG:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claudefuel.json}}"
+    vc_report=$(claudefuel_config_report "$vc_path")
+    [ -n "$vc_report" ] || { echo '{"schema":"claudefuel-config-check v1","status":"malformed","errors":["internal: report failed"]}'; exit 1; }
+    jq -n --arg path "$vc_path" --argjson r "$vc_report" \
+        '{schema: "claudefuel-config-check v1", path: $path} + $r'
+    case "$(printf '%s' "$vc_report" | jq -r .status)" in
+        malformed) exit 1 ;;
+        absent)    exit 2 ;;
+        *)         exit 0 ;;
+    esac
+fi
+
+# ===== --demo <state>: first-class preview renders =====
+# `statusline.sh --demo healthy|warning|critical|stale|offline` renders
+# the full bar from canned built-in data for that state — no stdin, no
+# network, no reads of the user's real caches, deterministic output
+# (fixed CLAUDEFUEL_NOW + fixed timestamps make goldens byte-stable; the
+# clock rendering still follows the host TZ). Honors CLAUDEFUEL_CONFIG,
+# which is the whole point: the configure skill previews a candidate
+# config against every alarm state before anything is written.
+#   healthy  — green bars, live extra spend, all columns visible
+#   warning  — yellow 5h / orange 7d, no projection alarms
+#   critical — ⚠ escalation, burn chip, cap-ETA + steer-to, ▸ governing
+#   stale    — OAuth-path bars with ·age marker + severe-staleness warning
+#   offline  — no data at all: the failure trailhead
+# The generalization of the doctor bulb-check; falls through to the
+# normal render path below with `input` pre-set (never reads stdin).
+demo_state=""
+demo_now=1751500000  # fixed: 2025-07-02T23:46:40Z
+if [ "${1:-}" = "--demo" ]; then
+    case "${2:-}" in
+        healthy|warning|critical|stale|offline) demo_state="$2" ;;
+        *)
+            echo "usage: statusline.sh --demo healthy|warning|critical|stale|offline" >&2
+            exit 2
+            ;;
+    esac
+    CLAUDEFUEL_NOW=$demo_now
+    CLAUDEFUEL_OFFLINE=1
+    case "$demo_state" in
+        healthy)
+            # 5h 30% with 2.5h elapsed (ratio 0.6 — nominal), 7d 12%.
+            input='{"model":{"display_name":"Claude"},"session_id":"demo","context_window":{"context_window_size":200000,"current_usage":{"input_tokens":40000}},"thinking":{"enabled":true},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":1751509000},"seven_day":{"used_percentage":12,"resets_at":1751900000}}}'
+            ;;
+        warning)
+            # 5h 72% (yellow) with ratio 0.86, 7d 55% (orange) ratio 0.64
+            # — hot colors, but no window projected to cap: no alarms.
+            input='{"model":{"display_name":"Claude"},"session_id":"demo","context_window":{"context_window_size":200000,"current_usage":{"input_tokens":120000}},"thinking":{"enabled":true},"rate_limits":{"five_hour":{"used_percentage":72,"resets_at":1751503000},"seven_day":{"used_percentage":55,"resets_at":1751586400}}}'
+            ;;
+        critical)
+            # 5h 93% burning ×1.2 with 1h to reset: ⚠ + inverse video,
+            # burn chip, cap-ETA + steer-to, ▸ governing. ctx 95% red.
+            input='{"model":{"display_name":"Claude"},"session_id":"demo","context_window":{"context_window_size":200000,"current_usage":{"input_tokens":190000}},"thinking":{"enabled":true},"rate_limits":{"five_hour":{"used_percentage":93,"resets_at":1751503600},"seven_day":{"used_percentage":61,"resets_at":1751672800}}}'
+            ;;
+        stale|offline)
+            # No rate_limits: exercises the OAuth fallback path so the
+            # staleness machinery (stale) or trailhead (offline) renders.
+            input='{"model":{"display_name":"Claude"},"session_id":"demo","context_window":{"context_window_size":200000,"current_usage":{"input_tokens":120000}},"thinking":{"enabled":true}}'
+            ;;
+    esac
+fi
+
+[ -n "$demo_state" ] || input=$(cat)
 
 if [ -z "$input" ]; then
     printf "Claude"
@@ -371,7 +574,10 @@ cfg_line1_order="model ctx thinking effort drift"
 cfg_columns_order="5h 7d extra"
 cfg_hide=""
 
-config_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claudefuel.json"
+# CLAUDEFUEL_CONFIG=<path> overrides the config-file location (read-only,
+# same malformed-file-is-ignored semantics) — the preview seam behind the
+# configure skill's before/after demos, validation testing, and goldens.
+config_file="${CLAUDEFUEL_CONFIG:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claudefuel.json}"
 if [ -f "$config_file" ]; then
     cfg_assignments=$(jq -r '
         def num(v; d): ((v | tonumber? // d) | floor | tostring);
@@ -621,6 +827,9 @@ segment_effort() {
 }
 
 segment_drift() {
+    # Demo renders are deterministic: the user's real version cache must
+    # not leak a ↗ signal into a golden render.
+    [ -n "$demo_state" ] && return 0
     local drift_segment
     drift_segment=$(claudefuel_drift_segment)
     [ -n "$drift_segment" ] || return 0
@@ -807,6 +1016,16 @@ usage_lock_dir="/tmp/claude/statusline-usage-fetch${CACHE_SUFFIX}.lock"
 cache_max_age=300
 mkdir -p /tmp/claude
 
+# Demo renders never touch the user's real caches: point every cache
+# path at /dev/null (fails -f, so nothing is read) — the canned demo
+# data is injected after the fetch/staleness machinery, which
+# CLAUDEFUEL_OFFLINE=1 already keeps inert.
+if [ -n "$demo_state" ]; then
+    cache_file="/dev/null"
+    attempt_file="/dev/null"
+    retryafter_file="/dev/null"
+fi
+
 # Fetch /api/oauth/usage and atomically publish it to the usage cache
 # (tmpfile+mv, so a concurrent render never reads a half-written file).
 # Echoes the response on success. Shared by the synchronous
@@ -983,6 +1202,12 @@ prepaid_cache_max_age=300
 prepaid_data=""
 prepaid_stale=false
 
+if [ -n "$demo_state" ]; then
+    prepaid_cache_file="/dev/null"
+    prepaid_attempt_file="/dev/null"
+    org_cache_file="/dev/null"
+fi
+
 # Resolve org UUID (cached long-term, it never changes) and fetch the
 # prepaid balance, atomically published via tmpfile+mv. Echoes the
 # response on success. Shared by the synchronous first-ever-render path
@@ -1083,6 +1308,35 @@ fi
 prepaid_stale_age=""
 if [ -n "$prepaid_data" ] && $prepaid_stale; then
     prepaid_stale_age=$p_age
+fi
+
+# ===== --demo data injection =====
+# With every fetch inert and every cache path pointed at /dev/null, set
+# the same variables the machinery above would have produced — canned,
+# fixed-timestamp values per state. healthy/warning/critical carry their
+# bars on stdin rate_limits; usage_data only feeds the extra column.
+if [ -n "$demo_state" ]; then
+    case "$demo_state" in
+        healthy|warning|critical)
+            usage_data='{"extra_usage":{"is_enabled":true,"used_credits":350}}'
+            prepaid_data='{"amount":2500,"currency":"USD"}'
+            ;;
+        stale)
+            # OAuth-path snapshot, 9 minutes old: ·9m marker on the 5h
+            # cell, prominent ⚠ updates warning with a fixed deadline.
+            usage_data='{"five_hour":{"utilization":72,"resets_at":"2025-07-03T00:36:40Z"},"seven_day":{"utilization":55,"resets_at":"2025-07-03T23:46:40Z"},"extra_usage":{"is_enabled":true,"used_credits":350}}'
+            usage_stale=true
+            usage_stale_age=540
+            usage_next_epoch=$(( demo_now + 240 ))
+            prepaid_data='{"amount":2500,"currency":"USD"}'
+            prepaid_stale_age=540
+            ;;
+        offline)
+            usage_data=""
+            prepaid_data=""
+            usage_failure="net"
+            ;;
+    esac
 fi
 
 cf_timing_mark prepaid

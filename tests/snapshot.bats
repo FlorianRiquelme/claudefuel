@@ -10,7 +10,7 @@
 #     burn rate, reset-pace, cap-ETA, gate decisions)
 #   - pure read: no fetches, no cache writes
 
-SNAPSHOT_SCHEMA_VERSION=1
+SNAPSHOT_SCHEMA_VERSION=2
 
 setup() {
   CLAUDE_CONFIG_DIR=$(mktemp -d)
@@ -153,4 +153,38 @@ EOF
   snap=$("$STATUSLINE" --snapshot)
   [ "$(echo "$snap" | jq -r '.profile.name')" = "$expected" ]
   [ "$(echo "$snap" | jq -r '.profile.config_dir')" = "$CLAUDE_CONFIG_DIR" ]
+}
+
+# ===== v2: the config block =====
+
+@test "snapshot v2 carries the config block with overridden keys" {
+  printf '{"version":1,"color_thresholds":{"red":80},"segments":{"hide":["thinking"]}}' \
+    > "$CLAUDE_CONFIG_DIR/claudefuel.json"
+  snap=$("$STATUSLINE" --snapshot)
+
+  [ "$(echo "$snap" | jq -r '.config.path')" = "$CLAUDE_CONFIG_DIR/claudefuel.json" ]
+  [ "$(echo "$snap" | jq -r '.config.status')" = "ok" ]
+  [ "$(echo "$snap" | jq -r '.config.effective.color_thresholds.red')" = "80" ]
+  echo "$snap" | jq -e '.config.overridden_keys == ["color_thresholds.red","segments.hide"]' >/dev/null
+}
+
+@test "snapshot v2 config block reports absent and malformed states" {
+  snap=$("$STATUSLINE" --snapshot)
+  [ "$(echo "$snap" | jq -r '.config.status')" = "absent" ]
+
+  printf 'not json' > "$CLAUDE_CONFIG_DIR/claudefuel.json"
+  snap=$("$STATUSLINE" --snapshot)
+  [ "$(echo "$snap" | jq -r '.config.status')" = "malformed" ]
+  # Malformed config never breaks the snapshot: still valid JSON,
+  # effective shows the defaults that actually render.
+  [ "$(echo "$snap" | jq -r '.config.effective.theme')" = "default" ]
+}
+
+@test "snapshot v2 keeps every v1 field (additive change only)" {
+  seed_usage_cache 50 7200 10800
+  snap=$("$STATUSLINE" --snapshot)
+  for path in .generated_at_epoch .profile.name .versions .caches.usage.ttl_seconds \
+      .usage.five_hour.utilization .derived.five_hour.cap_eta_rendered; do
+    echo "$snap" | jq -e "$path != null" >/dev/null
+  done
 }
