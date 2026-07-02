@@ -134,13 +134,27 @@ age_file() {
   [ "$calls" -eq 1 ]
 }
 
-@test "data older than the stale threshold renders a warning" {
+@test "data older than the stale threshold warns when usage next updates" {
   seed_stale_usage_cache 300
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p')
 
-  [[ "$line2" == *"stale"* ]]
+  [[ "$line2" == *"updates"* ]]
+}
+
+@test "a 429 cooldown surfaces the retry time, not the data age" {
+  # The warning should tell the user WHEN usage can update again (the
+  # Retry-After deadline as a clock time), not how old the data is.
+  export FAKE_HTTP_STATUS=429 FAKE_RETRY_AFTER=600
+  seed_stale_usage_cache 300
+
+  output=$(run_bar)
+  line2=$(printf '%s' "$output" | sed -n '2p')
+
+  [[ "$line2" == *"updates ~"* ]]            # shows a time, e.g. "updates ~5:53pm"
+  [[ "$line2" =~ (am|pm) ]]                  # clock time, not a duration
+  [[ "$line2" != *"stale"* ]]                # no bare-age wording
 }
 
 @test "data within the stale threshold does not render a warning" {
@@ -151,7 +165,7 @@ age_file() {
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p')
 
-  [[ "$line2" != *"stale"* ]]
+  [[ "$line2" != *"updates"* ]]
 }
 
 @test "fresh cache (within cache_max_age) never attempts a network fetch" {

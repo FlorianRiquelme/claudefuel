@@ -481,14 +481,29 @@ fi
 # Flag data that's stale well beyond the normal refresh cadence (fetches
 # have been failing) so the display can warn instead of silently showing
 # numbers the user could mistake for current — e.g. thinking they have
-# more budget left than they actually do.
+# more budget left than they actually do. Rather than report how old the
+# data is (not actionable), we report WHEN it can next update:
+#   - during a server-imposed 429 cooldown, the exact retry deadline;
+#   - otherwise, the next scheduled attempt (cache_max_age after the last).
+# The epoch is formatted to a clock time at render (format_clock_time).
 usage_stale=false
-stale_age_mins=0
+usage_next_epoch=""
 if [ -n "$usage_data" ] && [ -n "$cache_mtime" ]; then
     data_age=$(( now - cache_mtime ))
     if [ "$data_age" -ge $(( cache_max_age * 3 )) ]; then
         usage_stale=true
-        stale_age_mins=$(( data_age / 60 ))
+        if [ -f "$retryafter_file" ]; then
+            retry_deadline=$(cat "$retryafter_file" 2>/dev/null)
+            case "$retry_deadline" in
+                ''|*[!0-9]*) : ;;
+                *) [ "$retry_deadline" -gt "$now" ] && usage_next_epoch="$retry_deadline" ;;
+            esac
+        fi
+        if [ -z "$usage_next_epoch" ] && [ -f "$attempt_file" ]; then
+            attempt_mtime=$(stat -c %Y "$attempt_file" 2>/dev/null || stat -f %m "$attempt_file" 2>/dev/null)
+            next_attempt=$(( attempt_mtime + cache_max_age ))
+            [ "$next_attempt" -gt "$now" ] && usage_next_epoch="$next_attempt"
+        fi
     fi
 fi
 
@@ -608,6 +623,15 @@ format_reset_time() {
             date -d "@$epoch" +"%b %-d" 2>/dev/null
             ;;
     esac
+}
+
+# Format an epoch (seconds) as a local clock time like "5:53pm".
+# Same style as format_reset_time's "time" mode, but takes an epoch directly.
+format_clock_time() {
+    local epoch="$1"
+    [ -z "$epoch" ] && return
+    date -j -r "$epoch" +"%l:%M%p" 2>/dev/null | sed 's/^ //' | tr '[:upper:]' '[:lower:]' || \
+    date -d "@$epoch" +"%l:%M%P" 2>/dev/null | sed 's/^ //'
 }
 
 # Cap-ETA segment — predicted wall-clock 100% time for the 5h window.
@@ -730,7 +754,14 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     # Assemble line 2: bars row
     line2="${col1_bar}${sep}${col2_bar}"
     [ -n "$col3_bar" ] && line2+="${sep}${col3_bar}"
-    $usage_stale && line2+="${sep}${red}⚠ stale ${stale_age_mins}m${reset}"
+    if $usage_stale; then
+        next_update=$(format_clock_time "$usage_next_epoch")
+        if [ -n "$next_update" ]; then
+            line2+="${sep}${red}⚠ updates ~${next_update}${reset}"
+        else
+            line2+="${sep}${red}⚠ updates soon${reset}"
+        fi
+    fi
 
     # Assemble line 3: resets row
     line3="${col1_reset}${sep}${col2_reset}"
