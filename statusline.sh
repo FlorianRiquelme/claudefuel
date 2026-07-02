@@ -226,7 +226,7 @@ claudefuel_config_report() {
     local defaults='{
         "version": 1, "theme": "default",
         "color_thresholds": {"orange": 50, "yellow": 70, "red": 90},
-        "reset_display": "clock",
+        "reset_display": "clock", "glyphs": "unicode",
         "segments": {
           "order": {"line1": ["model","session","ctx","thinking","effort","agent","activity","drift"],
                     "columns": ["5h","7d","extra"]},
@@ -251,7 +251,7 @@ claudefuel_config_report() {
         def line1_tokens: ["model","session","ctx","thinking","effort","agent","activity","drift"];
         def column_tokens: ["5h","7d","extra"];
         def hide_tokens: line1_tokens + column_tokens + ["profile","cap_eta","projection","sessions"];
-        def known_keys: ["version","theme","color_thresholds","reset_display","segments"];
+        def known_keys: ["version","theme","color_thresholds","reset_display","glyphs","segments"];
 
         # Nearest-match hint for a mistyped token, prefix-based ("7day" →
         # "7d", "profil" → "profile"); falls back to listing valid tokens.
@@ -271,6 +271,7 @@ claudefuel_config_report() {
               red:    ((($cfg.color_thresholds.red)?    | tonumber? // 90) | floor)
             },
             reset_display: ((($cfg.reset_display)? // "clock") | tostring),
+            glyphs: ((($cfg.glyphs)? // "unicode") | tostring),
             segments: {
               order: {
                 line1: ((($cfg.segments.order.line1)? // $d.segments.order.line1)
@@ -283,7 +284,7 @@ claudefuel_config_report() {
             }
           } as $eff
         | ([ ["theme"], ["color_thresholds","orange"], ["color_thresholds","yellow"],
-             ["color_thresholds","red"], ["reset_display"],
+             ["color_thresholds","red"], ["reset_display"], ["glyphs"],
              ["segments","order","line1"], ["segments","order","columns"],
              ["segments","hide"] ]
            | map(select(. as $p | (($cfg | getpath($p))? // null) != null) | join("."))
@@ -308,6 +309,8 @@ claudefuel_config_report() {
                then ["unknown theme \"\($eff.theme)\" — default palette used"] else [] end)
             + (if ["clock","countdown"] | index($eff.reset_display) | not
                then ["unknown reset_display \"\($eff.reset_display)\" — clock used"] else [] end)
+            + (if ["unicode","ascii"] | index($eff.glyphs) | not
+               then ["unknown glyphs \"\($eff.glyphs)\" — unicode used"] else [] end)
             + (((($cfg.segments.order.line1)? // null) | if . != null and (type != "array") then ["segments.order.line1 is not an array — default used"] else [] end))
             + (((($cfg.segments.order.columns)? // null) | if . != null and (type != "array") then ["segments.order.columns is not an array — default used"] else [] end))
             + (((($cfg.segments.hide)? // null) | if . != null and (type != "array") then ["segments.hide is not an array — default used"] else [] end))
@@ -684,6 +687,7 @@ cfg_th_orange=50
 cfg_th_yellow=70
 cfg_th_red=90
 cfg_reset_display="clock"
+cfg_glyphs="unicode"
 cfg_line1_order="model session ctx thinking effort agent activity drift"
 cfg_columns_order="5h 7d extra"
 cfg_hide=""
@@ -702,6 +706,7 @@ if [ -f "$config_file" ]; then
         "cfg_th_yellow=" + num((.color_thresholds.yellow)?; 70),
         "cfg_th_red=" + num((.color_thresholds.red)?; 90),
         "cfg_reset_display=" + (((.reset_display)? // "clock") | tostring | @sh),
+        "cfg_glyphs=" + (((.glyphs)? // "unicode") | tostring | @sh),
         "cfg_line1_order=" + toks((.segments.order.line1)?; ["model","session","ctx","thinking","effort","agent","activity","drift"]),
         "cfg_columns_order=" + toks((.segments.order.columns)?; ["5h","7d","extra"]),
         "cfg_hide=" + toks((.segments.hide)?; [])
@@ -714,6 +719,40 @@ fi
 case "$cfg_theme" in
     mono) blue="" orange="" green="" cyan="" red="" yellow="" white="" ;;
 esac
+
+# ===== Responsive layout: COLUMNS-aware degradation ladder =====
+# Claude Code sets COLUMNS for the script (v2.1.153+; tput does not work
+# here). Per-segment priority, dropped from the bottom as width shrinks
+# — the same hide/registry mechanics as user hides, so ordering and
+# padding stay consistent. Rungs:
+#   ≤90  line 1 slims: effort drops, "thinking:" abbreviates to "think:"
+#        (line 1 is the longest line; it overflows first)
+#   ≤80  the extra column drops (lowest-priority column)
+#   ≤60  bars shrink to 5 cells, columns tighten, thinking drops
+# Unknown/absent COLUMNS never constrains (wide terminals, older Claude
+# Code, plain pipes).
+term_cols=0
+case "${COLUMNS:-}" in
+    ''|*[!0-9]*) ;;
+    *) term_cols=$COLUMNS ;;
+esac
+line1_bar_width=10
+bar_width_default=10
+col_width_default=19
+thinking_label="thinking:"
+if [ "$term_cols" -gt 0 ]; then
+    if [ "$term_cols" -le 90 ]; then
+        cfg_hide="$cfg_hide effort"
+        thinking_label="think:"
+    fi
+    [ "$term_cols" -le 80 ] && cfg_hide="$cfg_hide extra"
+    if [ "$term_cols" -le 60 ]; then
+        cfg_hide="$cfg_hide thinking"
+        line1_bar_width=5
+        bar_width_default=5
+        col_width_default=14
+    fi
+fi
 
 # Usage: segment_hidden <token> — true when token is in segments.hide.
 segment_hidden() {
@@ -930,15 +969,15 @@ segment_model() {
 
 segment_ctx() {
     local ctx_bar
-    ctx_bar=$(build_bar "$pct_used" 10)
+    ctx_bar=$(build_bar "$pct_used" "$line1_bar_width")
     printf '%s' "${white}ctx${reset} ${ctx_bar} ${orange}${used_tokens}/${total_tokens}${reset}"
 }
 
 segment_thinking() {
     if $thinking_on; then
-        printf '%s' "thinking: ${orange}On${reset}"
+        printf '%s' "${thinking_label} ${orange}On${reset}"
     else
-        printf '%s' "thinking: ${dim}Off${reset}"
+        printf '%s' "${thinking_label} ${dim}Off${reset}"
     fi
 }
 
@@ -1960,9 +1999,9 @@ line3=""
 
 if [ "$usage_source" = "stdin" ] \
     || { [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; }; then
-    bar_width=10
-    col1w=19
-    col2w=19
+    bar_width=$bar_width_default
+    col1w=$col_width_default
+    col2w=$col_width_default
 
     # ---- Window snapshots (extracted up front: the governing-constraint
     # marker needs both windows before either column renders). Native
@@ -2071,6 +2110,22 @@ elif [ -n "$usage_failure" ]; then
         *)    fail_glyph="?" ;;
     esac
     line2="${dim}${fail_glyph}${reset} ${yellow}✚ /claudefuel.doctor${reset}"
+fi
+
+# Glyph degradation: glyphs "ascii" maps every multibyte glyph to a
+# 1:1 ASCII stand-in just before output — one place, full coverage,
+# alignment preserved (padding counts one cell per glyph either way).
+# Default "unicode" costs nothing. No Nerd Font glyph is required in
+# either mode.
+if [ "$cfg_glyphs" = "ascii" ]; then
+    cf_ascii() {
+        sed -e 's/●/#/g; s/○/./g; s/▸/>/g; s/⚠/!/g; s/↻/@/g; s/⇄/=/g' \
+            -e 's/◈/*/g; s/⧉/+/g; s/✚/+/g; s/→/>/g; s/⚓/\&/g; s/×/x/g' \
+            -e 's/·/./g; s/≤/</g; s/↗/^/g'
+    }
+    line1=$(printf '%s' "$line1" | cf_ascii)
+    line2=$(printf '%s' "$line2" | cf_ascii)
+    line3=$(printf '%s' "$line3" | cf_ascii)
 fi
 
 # Output all lines
