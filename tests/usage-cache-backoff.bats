@@ -32,8 +32,15 @@ setup() {
   ATTEMPT_FILE="/tmp/claude/statusline-usage-attempt-${config_hash}"
   RETRYAFTER_FILE="/tmp/claude/statusline-usage-retryafter-${config_hash}"
   USAGE_LOCK="/tmp/claude/statusline-usage-fetch-${config_hash}.lock"
+  PREPAID_CACHE="/tmp/claude/statusline-prepaid-cache-${config_hash}.json"
   mkdir -p /tmp/claude
   rm -rf "$USAGE_LOCK" 2>/dev/null
+
+  # Seed a FRESH prepaid cache so the prepaid fetch never fires: these
+  # tests count curl calls, and only the usage fetch may contribute.
+  # (CLAUDEFUEL_OFFLINE can't isolate here anymore — it now correctly
+  # suppresses the usage fetch too, which is the fetch under test.)
+  printf '{"amount":0,"currency":"USD"}\n' > "$PREPAID_CACHE"
 
   # Fake curl: counts invocations and emits a configurable HTTP response so
   # tests can assert on retry/backoff behavior without touching the network.
@@ -71,11 +78,10 @@ EOF
   # export, not a prefix: a `VAR=val cmd1 | cmd2` prefix only applies to
   # cmd1, but the script that needs these is cmd2 ("$STATUSLINE").
   export CLAUDE_CODE_OAUTH_TOKEN=bogus-token
-  export CLAUDEFUEL_OFFLINE=1
 }
 
 teardown() {
-  rm -f "$USAGE_CACHE" "$ATTEMPT_FILE" "$RETRYAFTER_FILE" 2>/dev/null
+  rm -f "$USAGE_CACHE" "$ATTEMPT_FILE" "$RETRYAFTER_FILE" "$PREPAID_CACHE" 2>/dev/null
   rm -rf "$USAGE_LOCK" 2>/dev/null
   unset FAKE_HTTP_STATUS FAKE_RETRY_AFTER FAKE_BODY
   [ -n "$CLAUDE_CONFIG_DIR" ] && [ -d "$CLAUDE_CONFIG_DIR" ] && rm -rf "$CLAUDE_CONFIG_DIR"
@@ -111,6 +117,19 @@ age_file() {
   touch -t "$(date -r "$past" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$past" +%Y%m%d%H%M.%S)" "$1"
 }
 
+# The stale-cache refresh is a DETACHED background fetch (never-block
+# render), so its side effects — curl-call log lines, the retry-after
+# file — land shortly after run_bar returns. Poll for a condition
+# instead of asserting immediately.
+# Args: <condition...> (eval'd), up to ~5s
+wait_for() {
+  for _ in $(seq 1 50); do
+    eval "$*" && return 0
+    sleep 0.1
+  done
+  eval "$*"
+}
+
 @test "failed fetch falls back to stale cache instead of blanking the bars" {
   seed_stale_usage_cache 1000
 
@@ -131,7 +150,9 @@ age_file() {
   seed_stale_usage_cache 1000
 
   run_bar >/dev/null
+  wait_for '[ "$(wc -l < "$CURL_CALLS_FILE" | tr -d " ")" -ge 1 ]'
   run_bar >/dev/null
+  sleep 0.3  # give a (wrongly) fired background fetch time to log itself
 
   calls=$(wc -l < "$CURL_CALLS_FILE" | tr -d ' ')
   [ "$calls" -eq 1 ]
@@ -176,6 +197,7 @@ age_file() {
   seed_stale_usage_cache 10
 
   run_bar >/dev/null
+  sleep 0.3  # give a (wrongly) fired background fetch time to log itself
 
   [ ! -s "$CURL_CALLS_FILE" ]
 }
@@ -188,6 +210,7 @@ age_file() {
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p')
+  sleep 0.3  # give a (wrongly) fired background fetch time to log itself
 
   [ ! -s "$CURL_CALLS_FILE" ]         # did not fetch
   [[ "$line2" == *"87%"* ]]           # still rendered cached bars
@@ -199,6 +222,7 @@ age_file() {
   age_file "$USAGE_LOCK" 30           # older than the 15s max-hold
 
   run_bar >/dev/null
+  wait_for '[ "$(wc -l < "$CURL_CALLS_FILE" | tr -d " ")" -ge 1 ]'
 
   calls=$(wc -l < "$CURL_CALLS_FILE" | tr -d ' ')
   [ "$calls" -eq 1 ]                  # stole the lock and fetched
@@ -225,9 +249,11 @@ age_file() {
   seed_stale_usage_cache 1000
 
   run_bar >/dev/null                 # attempt 1: gets 429, records deadline
+  wait_for '[ -f "$RETRYAFTER_FILE" ]'
   [ -f "$RETRYAFTER_FILE" ]
   age_file "$ATTEMPT_FILE" 400       # normal attempt gate is now open again
   run_bar >/dev/null                 # but retry-after deadline still blocks
+  sleep 0.3  # give a (wrongly) fired background fetch time to log itself
 
   calls=$(wc -l < "$CURL_CALLS_FILE" | tr -d ' ')
   [ "$calls" -eq 1 ]
@@ -240,9 +266,11 @@ age_file() {
   seed_stale_usage_cache 1000
 
   run_bar >/dev/null                 # attempt 1: empty response, no deadline
+  wait_for '[ "$(wc -l < "$CURL_CALLS_FILE" | tr -d " ")" -ge 1 ]'
   [ ! -f "$RETRYAFTER_FILE" ]
   age_file "$ATTEMPT_FILE" 400       # attempt window elapsed
   run_bar >/dev/null                 # should retry
+  wait_for '[ "$(wc -l < "$CURL_CALLS_FILE" | tr -d " ")" -ge 2 ]'
 
   calls=$(wc -l < "$CURL_CALLS_FILE" | tr -d ' ')
   [ "$calls" -eq 2 ]

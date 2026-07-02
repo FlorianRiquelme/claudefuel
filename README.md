@@ -29,6 +29,7 @@ Or `/claudefuel.uninstall` from inside a Claude Code session.
 - **Line 3:** `↻` reset times for each window. When you're burning through the 5-hour window faster than reset-pace, a `~cap HH:MM-HH:MM` segment appears next to the 5h reset — a rough estimate of when you'll hit 100% at the current pace. Dormant when healthy; the tilde and range signal it's a prediction, not a precise time.
 - Cross-platform: macOS Keychain, Linux credentials file / GNOME Keyring
 - Color-coded: green → orange → yellow → red as you burn through limits
+- **Never-block render:** the bar always paints instantly from its cache — a stale cache still paints while a detached one-shot background fetch refreshes it for the next render. Only the very first render after install waits on the network. Set `CLAUDEFUEL_OFFLINE=1` to skip all fetches entirely (the cached values keep painting).
 
 ## Works with multiple Claude Code accounts
 
@@ -66,7 +67,7 @@ Once installed, five slash commands are available in any Claude Code session:
 | Command | What it does |
 |---|---|
 | `/claudefuel.update` | Reconcile to the latest released spec. Pinned to the tag, shows the full diff before writing anything. Run it when you see the `↗ /claudefuel.update` drift signal on line 1. |
-| `/claudefuel.doctor` | Non-destructive health check across the install — file presence, version header, `settings.json` wiring, dependencies. |
+| `/claudefuel.doctor` | Non-destructive health check across the install — file presence, version header, `settings.json` wiring, dependencies. Includes a timing mode (`CLAUDEFUEL_TIMING=1`) that checks per-stage render latency against the published budget. |
 | `/claudefuel.rollback` | Restore the most recent `*.bak-<timestamp>` written by a previous install. Shows the diff and asks before restoring. |
 | `/claudefuel.uninstall` | Remove the install bundle cleanly. Asks separately about backups and your `claudefuel.json`. |
 | `/claudefuel.configure` | **Placeholder** — the name is reserved as part of the stability contract but config keys (color thresholds, segment ordering, theme presets) aren't wired into the bar yet. |
@@ -196,6 +197,9 @@ The version-comparison guard is intentionally strict — local edits to the vers
 
 **`/claudefuel.configure` doesn't actually configure anything.**
 Correct — the name is reserved as part of the stability contract but config keys aren't wired into the bar yet.
+
+**The bar feels slow, or I'm working offline.**
+Once a cache exists the render never waits on the network — if it still feels slow, run `/claudefuel.doctor` and ask for timing mode to check the per-stage latency against the published budget. On a flaky or absent network, set `CLAUDEFUEL_OFFLINE=1` to skip every fetch; the bar keeps painting the last cached values.
 
 ## Known limitations
 

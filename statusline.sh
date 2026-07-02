@@ -26,6 +26,22 @@ if [ -z "$input" ]; then
     exit 0
 fi
 
+# Timing mode (CLAUDEFUEL_TIMING=1): emit per-stage wall time to stderr so
+# /claudefuel.doctor can check renders against the published latency budget.
+# Uses jq as a portable millisecond clock (BSD date has no %N); each mark
+# costs one extra jq spawn, so reported timings carry a few ms of
+# instrumentation overhead. Stages: jq-parse, drift, usage, prepaid, render.
+if [ -n "$CLAUDEFUEL_TIMING" ]; then
+    _cf_t_last=$(jq -n 'now*1000|floor')
+fi
+cf_timing_mark() {
+    [ -n "$CLAUDEFUEL_TIMING" ] || return 0
+    local _cf_now
+    _cf_now=$(jq -n 'now*1000|floor')
+    printf 'claudefuel-timing: %s %dms\n' "$1" "$(( _cf_now - _cf_t_last ))" >&2
+    _cf_t_last=$_cf_now
+}
+
 # ANSI colors
 blue='\033[38;2;0;153;255m'
 orange='\033[38;2;255;176;85m'
@@ -106,6 +122,8 @@ thinking_val=$(echo "$input" | jq -r '.thinking.enabled // false')
 # Absent when the current model does not support the effort parameter.
 effort_level=$(echo "$input" | jq -r '.effort.level // empty')
 
+cf_timing_mark jq-parse
+
 # ===== LINE 1: [profile] Model | ctx <bar> <used>/<total> | thinking | effort =====
 # Show active profile name when using CLAUDE_CONFIG_DIR (e.g. "work", "personal")
 profile_label=""
@@ -130,15 +148,36 @@ if [ -n "$effort_level" ]; then
     line1+=" ${dim}|${reset} effort: ${cyan}${effort_level}${reset}"
 fi
 
+# Fetch the upstream version header and atomically publish it to the drift
+# cache (tmpfile+mv, so a concurrent render never reads a half-written
+# file). Echoes the version on success. Shared by the synchronous
+# first-ever-render path and the detached background refresh.
+# Usage: claudefuel_fetch_upstream_version <cache_dir> <cache_file>
+claudefuel_fetch_upstream_version() {
+    local cache_dir="$1" cache_file="$2" fresh
+    fresh=$(curl -fsSL --connect-timeout 2 --max-time 3 \
+        "https://raw.githubusercontent.com/FlorianRiquelme/claudefuel/main/statusline.sh" 2>/dev/null \
+        | head -20 | grep -E '^# claudefuel:' | head -n1 \
+        | sed -E 's/^# claudefuel: v//')
+    if [ -n "$fresh" ]; then
+        mkdir -p "$cache_dir"
+        printf '{"upstream_version":"%s"}\n' "$fresh" > "$cache_file.tmp.$$" \
+            && mv "$cache_file.tmp.$$" "$cache_file"
+        echo "$fresh"
+    fi
+}
+
 # Drift detection — when the cached upstream version is newer than the
 # installed version, append a single '↗ /claudefuel.update' segment to
 # line 1. No count, no growth in bar height, no segment when equal or
 # when the install is ahead of the cache (a fresh local update can
 # outrun the 6h cache TTL and a lagging raw.githubusercontent CDN copy).
 # Cache lives at $CLAUDE_CONFIG_DIR/cache/claudefuel-version.json
-# (or ~/.claude/cache/), TTL 6h. When stale, attempt one short-timeout
-# fetch of raw statusline.sh from main; on failure keep the stale value
-# (offline tolerance). Set CLAUDEFUEL_OFFLINE=1 to skip the fetch.
+# (or ~/.claude/cache/), TTL 6h. Never-block: a stale cached value still
+# paints this render while a detached one-shot fetch refreshes the cache
+# for the next render (see the no-daemon note at the usage fetch below);
+# only a missing cache fetches synchronously (first-ever render).
+# Set CLAUDEFUEL_OFFLINE=1 to skip any fetch.
 claudefuel_drift_segment() {
     local cache_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cache"
     local cache_file="$cache_dir/claudefuel-version.json"
@@ -163,15 +202,16 @@ claudefuel_drift_segment() {
     fi
 
     if $should_fetch && [ -z "$CLAUDEFUEL_OFFLINE" ]; then
-        local fresh
-        fresh=$(curl -fsSL --connect-timeout 2 --max-time 3 \
-            "https://raw.githubusercontent.com/FlorianRiquelme/claudefuel/main/statusline.sh" 2>/dev/null \
-            | head -20 | grep -E '^# claudefuel:' | head -n1 \
-            | sed -E 's/^# claudefuel: v//')
-        if [ -n "$fresh" ]; then
-            upstream_version="$fresh"
-            mkdir -p "$cache_dir"
-            printf '{"upstream_version":"%s"}\n' "$fresh" > "$cache_file"
+        if [ -n "$upstream_version" ]; then
+            # Stale value paints below; refresh lands for the next render.
+            # touch claims the refresh so overlapping renders don't re-fire.
+            touch "$cache_file"
+            ( claudefuel_fetch_upstream_version "$cache_dir" "$cache_file" ) \
+                >/dev/null 2>&1 </dev/null &
+            disown
+        else
+            # First-ever render: nothing cached to paint, fetch synchronously.
+            upstream_version=$(claudefuel_fetch_upstream_version "$cache_dir" "$cache_file")
         fi
     fi
 
@@ -192,6 +232,8 @@ drift_segment=$(claudefuel_drift_segment)
 if [ -n "$drift_segment" ]; then
     line1+=" ${dim}|${reset} ${yellow}${drift_segment}${reset}"
 fi
+
+cf_timing_mark drift
 
 # ===== Cross-platform OAuth token resolution with auto-refresh =====
 # Tries credential sources in order: env var → macOS Keychain → Linux creds file → GNOME Keyring
@@ -436,23 +478,70 @@ usage_lock_dir="/tmp/claude/statusline-usage-fetch${CACHE_SUFFIX}.lock"
 cache_max_age=300
 mkdir -p /tmp/claude
 
+# Fetch /api/oauth/usage and atomically publish it to the usage cache
+# (tmpfile+mv, so a concurrent render never reads a half-written file).
+# Echoes the response on success. Shared by the synchronous
+# first-ever-render path and the detached background refresh.
+# Captures response headers so we can see the HTTP status and any
+# Retry-After — a bare `curl -s` throws both away, which is how we
+# ended up hammering a rate-limited endpoint blind.
+claudefuel_fetch_usage() {
+    local token="$1" response http_status hdr_file retry_secs
+    hdr_file="/tmp/claude/statusline-usage-hdr${CACHE_SUFFIX}.$$"
+    response=$(curl -s -D "$hdr_file" --max-time 5 \
+        -H "Accept: application/json" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $token" \
+        -H "anthropic-beta: oauth-2025-04-20" \
+        -H "User-Agent: claude-code/2.1.34" \
+        "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+    http_status=$(awk 'toupper($1) ~ /^HTTP/ {print $2}' "$hdr_file" 2>/dev/null | tail -n1)
+    if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
+        echo "$response" > "$cache_file.tmp.$$" && mv "$cache_file.tmp.$$" "$cache_file"
+        rm -f "$retryafter_file" 2>/dev/null  # recovered — clear the cooldown
+        echo "$response"
+    elif [ "$http_status" = "429" ]; then
+        # Record when we're allowed to try again. Retry-After is
+        # delta-seconds here; fall back to a conservative 5 min if it's
+        # missing or non-numeric.
+        retry_secs=$(grep -i '^retry-after:' "$hdr_file" 2>/dev/null | tr -d '\r' | awk '{print $2}' | tail -n1)
+        case "$retry_secs" in
+            ''|*[!0-9]*) retry_secs=300 ;;
+        esac
+        echo $(( $(date +%s) + retry_secs )) > "$retryafter_file"
+    fi
+    rm -f "$hdr_file" 2>/dev/null
+}
+
 needs_refresh=true
 usage_data=""
 cache_mtime=""
 now=$(date +%s)
 
-# Check cache
+# Cache-first paint: read whatever cache exists — fresh or stale — so the
+# render never waits on the network once a cache file is on disk.
 if [ -f "$cache_file" ]; then
+    usage_data=$(cat "$cache_file" 2>/dev/null)
     cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
     cache_age=$(( now - cache_mtime ))
-    if [ "$cache_age" -lt "$cache_max_age" ]; then
-        needs_refresh=false
-        usage_data=$(cat "$cache_file" 2>/dev/null)
-    fi
+    [ "$cache_age" -lt "$cache_max_age" ] && needs_refresh=false
 fi
 
+# Never-block fetch path. When a stale cache was painted above, refresh it
+# with a DETACHED ONE-SHOT background fetch whose result benefits the next
+# render. This stays on the right side of ADR-0003's no-daemon cliff: the
+# background job is a single token-lookup + curl + atomic mv that exits on
+# its own — no loop, no polling interval, no PID tracking or supervision,
+# no IPC. Nothing outlives one fetch, and the bar itself stays a pure
+# function of (stdin, env, cache files). Its stdio is detached from the
+# statusline's pipes so Claude Code never waits on the child.
+# CLAUDEFUEL_OFFLINE=1 skips the fetch entirely.
+
 # Only attempt a network fetch if we haven't tried recently, regardless of
-# whether that attempt succeeded.
+# whether that attempt succeeded. Touching the attempt marker (never the
+# cache file) is what claims the refresh, so overlapping renders don't
+# stampede duplicate fetches while the cache mtime stays an honest record
+# of when the data last actually changed.
 should_attempt=true
 if [ -f "$attempt_file" ]; then
     attempt_mtime=$(stat -c %Y "$attempt_file" 2>/dev/null || stat -f %m "$attempt_file" 2>/dev/null)
@@ -461,8 +550,8 @@ if [ -f "$attempt_file" ]; then
 fi
 
 # Honor a server-issued Retry-After: stay quiet until the deadline passes.
-# This dominates the 60s cadence above — a 429 asks for a much longer wait,
-# and retrying sooner just re-arms the rate limit.
+# This dominates the normal cadence above — a 429 asks for a much longer
+# wait, and retrying sooner just re-arms the rate limit.
 if [ -f "$retryafter_file" ]; then
     retry_deadline=$(cat "$retryafter_file" 2>/dev/null)
     if [ -n "$retry_deadline" ] && [ "$now" -lt "$retry_deadline" ]; then
@@ -470,51 +559,33 @@ if [ -f "$retryafter_file" ]; then
     fi
 fi
 
-# Fetch fresh data if cache is stale — but only if we win the cross-process
-# lock, so concurrent sessions don't all fire at the same deadline. A process
-# that loses the lock falls through to the stale cache below; another process
-# is already refreshing it.
-if $needs_refresh && $should_attempt && claudefuel_try_lock "$usage_lock_dir" "$now" 15; then
+# Fetch only when the cache is stale, the attempt cadence allows it, we're
+# not offline, and we win the cross-process lock — so concurrent sessions
+# don't all fire at the same deadline. A process that loses the lock simply
+# paints the cache-first value from above; another process is refreshing.
+if $needs_refresh && $should_attempt && [ -z "$CLAUDEFUEL_OFFLINE" ] \
+    && claudefuel_try_lock "$usage_lock_dir" "$now" 15; then
     touch "$attempt_file" 2>/dev/null
-    token=$(get_oauth_token)
-    if [ -n "$token" ] && [ "$token" != "null" ]; then
-        # Capture response headers so we can see the HTTP status and any
-        # Retry-After — a bare `curl -s` throws both away, which is how we
-        # ended up hammering a rate-limited endpoint blind.
-        hdr_file="/tmp/claude/statusline-usage-hdr${CACHE_SUFFIX}.$$"
-        response=$(curl -s -D "$hdr_file" --max-time 5 \
-            -H "Accept: application/json" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $token" \
-            -H "anthropic-beta: oauth-2025-04-20" \
-            -H "User-Agent: claude-code/2.1.34" \
-            "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
-        http_status=$(awk 'toupper($1) ~ /^HTTP/ {print $2}' "$hdr_file" 2>/dev/null | tail -n1)
-        if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
-            usage_data="$response"
-            echo "$response" > "$cache_file"
-            cache_mtime=$now
-            rm -f "$retryafter_file" 2>/dev/null  # recovered — clear the cooldown
-        elif [ "$http_status" = "429" ]; then
-            # Record when we're allowed to try again. Retry-After is
-            # delta-seconds here; fall back to a conservative 5 min if it's
-            # missing or non-numeric.
-            retry_secs=$(grep -i '^retry-after:' "$hdr_file" 2>/dev/null | tr -d '\r' | awk '{print $2}' | tail -n1)
-            case "$retry_secs" in
-                ''|*[!0-9]*) retry_secs=300 ;;
-            esac
-            echo $(( now + retry_secs )) > "$retryafter_file"
+    if [ -n "$usage_data" ]; then
+        # Stale value already painted this render; the detached refresh
+        # lands the fresh payload (or a 429 cooldown) for the next one.
+        (
+            token=$(get_oauth_token)
+            if [ -n "$token" ] && [ "$token" != "null" ]; then
+                claudefuel_fetch_usage "$token"
+            fi
+            rm -rf "$usage_lock_dir" 2>/dev/null
+        ) >/dev/null 2>&1 </dev/null &
+        disown
+    else
+        # First-ever render (no cache at all): fetch synchronously so the
+        # bar doesn't paint empty on install.
+        token=$(get_oauth_token)
+        if [ -n "$token" ] && [ "$token" != "null" ]; then
+            usage_data=$(claudefuel_fetch_usage "$token")
         fi
-        rm -f "$hdr_file" 2>/dev/null
+        rm -rf "$usage_lock_dir" 2>/dev/null
     fi
-    rm -rf "$usage_lock_dir" 2>/dev/null
-fi
-
-# Fall back to stale cache whenever we don't have fresh data — including
-# while backing off, so the bars keep showing the last known numbers (with
-# the stale warning below) instead of vanishing entirely.
-if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
-    usage_data=$(cat "$cache_file" 2>/dev/null)
 fi
 
 # Flag data that's stale well beyond the normal refresh cadence (fetches
@@ -546,20 +617,67 @@ if [ -n "$usage_data" ] && [ -n "$cache_mtime" ]; then
     fi
 fi
 
+cf_timing_mark usage
+
 # ===== Prepaid credit balance (separate cache, longer TTL) =====
 # Balance changes slowly, so cache for 5 min to avoid hammering the API.
 prepaid_cache_file="/tmp/claude/statusline-prepaid-cache${CACHE_SUFFIX}.json"
 prepaid_attempt_file="/tmp/claude/statusline-prepaid-attempt${CACHE_SUFFIX}"
 prepaid_lock_dir="/tmp/claude/statusline-prepaid-fetch${CACHE_SUFFIX}.lock"
+org_cache_file="/tmp/claude/statusline-orguuid-cache${CACHE_SUFFIX}"
 prepaid_cache_max_age=300
 prepaid_data=""
+prepaid_stale=false
 
-if [ -f "$prepaid_cache_file" ]; then
-    p_mtime=$(stat -c %Y "$prepaid_cache_file" 2>/dev/null || stat -f %m "$prepaid_cache_file" 2>/dev/null)
-    p_age=$(( now - p_mtime ))
-    if [ "$p_age" -lt "$prepaid_cache_max_age" ]; then
-        prepaid_data=$(cat "$prepaid_cache_file" 2>/dev/null)
+# Resolve org UUID (cached long-term, it never changes) and fetch the
+# prepaid balance, atomically published via tmpfile+mv. Echoes the
+# response on success. Shared by the synchronous first-ever-render path
+# and the detached background refresh. Captures the HTTP status so a 429
+# feeds the SHARED Retry-After cooldown — both endpoints live on the same
+# rate-limited host, so a 429 from either pauses all account API traffic.
+claudefuel_fetch_prepaid() {
+    local token="$1" org_uuid account_resp prepaid_resp p_hdr p_status p_retry
+    org_uuid=""
+    [ -f "$org_cache_file" ] && org_uuid=$(cat "$org_cache_file" 2>/dev/null)
+    if [ -z "$org_uuid" ]; then
+        account_resp=$(curl -s --max-time 5 \
+            -H "Authorization: Bearer $token" \
+            -H "anthropic-beta: oauth-2025-04-20" \
+            -H "User-Agent: claude-code/2.1.34" \
+            "https://api.anthropic.com/api/oauth/account" 2>/dev/null)
+        org_uuid=$(echo "$account_resp" | jq -r '.memberships[0].organization.uuid // empty' 2>/dev/null)
+        [ -n "$org_uuid" ] && echo "$org_uuid" > "$org_cache_file"
     fi
+    [ -z "$org_uuid" ] && return 0
+
+    p_hdr="/tmp/claude/statusline-prepaid-hdr${CACHE_SUFFIX}.$$"
+    prepaid_resp=$(curl -s -D "$p_hdr" --max-time 5 \
+        -H "Authorization: Bearer $token" \
+        -H "anthropic-beta: oauth-2025-04-20" \
+        -H "User-Agent: claude-code/2.1.34" \
+        "https://api.anthropic.com/api/oauth/organizations/$org_uuid/prepaid/credits" 2>/dev/null)
+    p_status=$(awk 'toupper($1) ~ /^HTTP/ {print $2}' "$p_hdr" 2>/dev/null | tail -n1)
+    if [ -n "$prepaid_resp" ] && echo "$prepaid_resp" | jq -e '.amount' >/dev/null 2>&1; then
+        echo "$prepaid_resp" > "$prepaid_cache_file.tmp.$$" \
+            && mv "$prepaid_cache_file.tmp.$$" "$prepaid_cache_file"
+        echo "$prepaid_resp"
+    elif [ "$p_status" = "429" ]; then
+        # Feed the shared cooldown so the usage fetch backs off too.
+        p_retry=$(grep -i '^retry-after:' "$p_hdr" 2>/dev/null | tr -d '\r' | awk '{print $2}' | tail -n1)
+        case "$p_retry" in
+            ''|*[!0-9]*) p_retry=300 ;;
+        esac
+        echo $(( $(date +%s) + p_retry )) > "$retryafter_file"
+    fi
+    rm -f "$p_hdr" 2>/dev/null
+}
+
+# Cache-first paint: stale balance still renders this turn.
+if [ -f "$prepaid_cache_file" ]; then
+    prepaid_data=$(cat "$prepaid_cache_file" 2>/dev/null)
+    p_mtime=$(stat -c %Y "$prepaid_cache_file" 2>/dev/null || stat -f %m "$prepaid_cache_file" 2>/dev/null)
+    p_age=$(( $(date +%s) - p_mtime ))
+    [ "$p_age" -ge "$prepaid_cache_max_age" ] && prepaid_stale=true
 fi
 
 # Like the usage fetch, the prepaid fetch must not retry on every render when
@@ -580,55 +698,33 @@ if [ -f "$retryafter_file" ]; then
     esac
 fi
 
-if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && $prepaid_should_attempt; then
-    # Token may be unset if usage cache was fresh — fetch it now
-    [ -z "$token" ] || [ "$token" = "null" ] && token=$(get_oauth_token)
-fi
-
-if [ -z "$prepaid_data" ] && [ -z "$CLAUDEFUEL_OFFLINE" ] && $prepaid_should_attempt && [ -n "$token" ] && [ "$token" != "null" ] && claudefuel_try_lock "$prepaid_lock_dir" "$now" 15; then
+if [ -z "$CLAUDEFUEL_OFFLINE" ] && $prepaid_should_attempt \
+    && { [ -z "$prepaid_data" ] || $prepaid_stale; } \
+    && claudefuel_try_lock "$prepaid_lock_dir" "$now" 15; then
     touch "$prepaid_attempt_file" 2>/dev/null
-    # Resolve org UUID — cache long-term, it never changes
-    org_cache_file="/tmp/claude/statusline-orguuid-cache${CACHE_SUFFIX}"
-    org_uuid=""
-    [ -f "$org_cache_file" ] && org_uuid=$(cat "$org_cache_file" 2>/dev/null)
-    if [ -z "$org_uuid" ]; then
-        account_resp=$(curl -s --max-time 5 \
-            -H "Authorization: Bearer $token" \
-            -H "anthropic-beta: oauth-2025-04-20" \
-            -H "User-Agent: claude-code/2.1.34" \
-            "https://api.anthropic.com/api/oauth/account" 2>/dev/null)
-        org_uuid=$(echo "$account_resp" | jq -r '.memberships[0].organization.uuid // empty' 2>/dev/null)
-        [ -n "$org_uuid" ] && echo "$org_uuid" > "$org_cache_file"
-    fi
-
-    if [ -n "$org_uuid" ]; then
-        p_hdr="/tmp/claude/statusline-prepaid-hdr${CACHE_SUFFIX}.$$"
-        prepaid_resp=$(curl -s -D "$p_hdr" --max-time 5 \
-            -H "Authorization: Bearer $token" \
-            -H "anthropic-beta: oauth-2025-04-20" \
-            -H "User-Agent: claude-code/2.1.34" \
-            "https://api.anthropic.com/api/oauth/organizations/$org_uuid/prepaid/credits" 2>/dev/null)
-        p_status=$(awk 'toupper($1) ~ /^HTTP/ {print $2}' "$p_hdr" 2>/dev/null | tail -n1)
-        if [ -n "$prepaid_resp" ] && echo "$prepaid_resp" | jq -e '.amount' >/dev/null 2>&1; then
-            prepaid_data="$prepaid_resp"
-            echo "$prepaid_resp" > "$prepaid_cache_file"
-        elif [ "$p_status" = "429" ]; then
-            # Feed the shared cooldown so the usage fetch backs off too.
-            p_retry=$(grep -i '^retry-after:' "$p_hdr" 2>/dev/null | tr -d '\r' | awk '{print $2}' | tail -n1)
-            case "$p_retry" in
-                ''|*[!0-9]*) p_retry=300 ;;
-            esac
-            echo $(( now + p_retry )) > "$retryafter_file"
+    if [ -n "$prepaid_data" ]; then
+        # Stale balance already painted this render; detached one-shot
+        # refresh — see the no-daemon note at the usage fetch above.
+        (
+            token=$(get_oauth_token)
+            if [ -n "$token" ] && [ "$token" != "null" ]; then
+                claudefuel_fetch_prepaid "$token"
+            fi
+            rm -rf "$prepaid_lock_dir" 2>/dev/null
+        ) >/dev/null 2>&1 </dev/null &
+        disown
+    else
+        # First-ever render: fetch synchronously. Token may be unset if the
+        # usage cache was fresh — resolve it now.
+        [ -z "$token" ] || [ "$token" = "null" ] && token=$(get_oauth_token)
+        if [ -n "$token" ] && [ "$token" != "null" ]; then
+            prepaid_data=$(claudefuel_fetch_prepaid "$token")
         fi
-        rm -f "$p_hdr" 2>/dev/null
+        rm -rf "$prepaid_lock_dir" 2>/dev/null
     fi
-    rm -rf "$prepaid_lock_dir" 2>/dev/null
 fi
 
-# Fall back to stale prepaid cache
-if [ -z "$prepaid_data" ] && [ -f "$prepaid_cache_file" ]; then
-    prepaid_data=$(cat "$prepaid_cache_file" 2>/dev/null)
-fi
+cf_timing_mark prepaid
 
 # Cross-platform ISO to epoch conversion
 # Converts ISO 8601 timestamp (e.g. "2025-06-15T12:30:00Z" or "2025-06-15T12:30:00.123+00:00") to epoch seconds.
@@ -843,5 +939,7 @@ fi
 printf "%b" "$line1"
 [ -n "$line2" ] && printf "\n%b" "$line2"
 [ -n "$line3" ] && printf "\n%b" "$line3"
+
+cf_timing_mark render
 
 exit 0
