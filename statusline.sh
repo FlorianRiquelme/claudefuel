@@ -393,6 +393,11 @@ cache_file="/tmp/claude/statusline-usage-cache${CACHE_SUFFIX}.json"
 # request with no backoff, which can keep an upstream rate limit alive
 # indefinitely while silently showing stale numbers.
 attempt_file="/tmp/claude/statusline-usage-attempt${CACHE_SUFFIX}"
+# When the API rate-limits us (429) it returns a Retry-After telling us how
+# long to stay quiet — often tens of minutes. This file records that deadline
+# (absolute epoch seconds). Poking the endpoint again before it passes keeps
+# the rate limit alive indefinitely, so honoring it is what lets usage recover.
+retryafter_file="/tmp/claude/statusline-usage-retryafter${CACHE_SUFFIX}"
 cache_max_age=60  # seconds between API calls
 mkdir -p /tmp/claude
 
@@ -420,28 +425,57 @@ if [ -f "$attempt_file" ]; then
     [ "$attempt_age" -lt "$cache_max_age" ] && should_attempt=false
 fi
 
+# Honor a server-issued Retry-After: stay quiet until the deadline passes.
+# This dominates the 60s cadence above — a 429 asks for a much longer wait,
+# and retrying sooner just re-arms the rate limit.
+if [ -f "$retryafter_file" ]; then
+    retry_deadline=$(cat "$retryafter_file" 2>/dev/null)
+    if [ -n "$retry_deadline" ] && [ "$now" -lt "$retry_deadline" ]; then
+        should_attempt=false
+    fi
+fi
+
 # Fetch fresh data if cache is stale
 if $needs_refresh && $should_attempt; then
     touch "$attempt_file" 2>/dev/null
     token=$(get_oauth_token)
     if [ -n "$token" ] && [ "$token" != "null" ]; then
-        response=$(curl -s --max-time 5 \
+        # Capture response headers so we can see the HTTP status and any
+        # Retry-After — a bare `curl -s` throws both away, which is how we
+        # ended up hammering a rate-limited endpoint blind.
+        hdr_file="/tmp/claude/statusline-usage-hdr${CACHE_SUFFIX}.$$"
+        response=$(curl -s -D "$hdr_file" --max-time 5 \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $token" \
             -H "anthropic-beta: oauth-2025-04-20" \
             -H "User-Agent: claude-code/2.1.34" \
             "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+        http_status=$(awk 'toupper($1) ~ /^HTTP/ {print $2}' "$hdr_file" 2>/dev/null | tail -n1)
         if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
             usage_data="$response"
             echo "$response" > "$cache_file"
             cache_mtime=$now
+            rm -f "$retryafter_file" 2>/dev/null  # recovered — clear the cooldown
+        elif [ "$http_status" = "429" ]; then
+            # Record when we're allowed to try again. Retry-After is
+            # delta-seconds here; fall back to a conservative 5 min if it's
+            # missing or non-numeric.
+            retry_secs=$(grep -i '^retry-after:' "$hdr_file" 2>/dev/null | tr -d '\r' | awk '{print $2}' | tail -n1)
+            case "$retry_secs" in
+                ''|*[!0-9]*) retry_secs=300 ;;
+            esac
+            echo $(( now + retry_secs )) > "$retryafter_file"
         fi
+        rm -f "$hdr_file" 2>/dev/null
     fi
-    # Fall back to stale cache
-    if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
-        usage_data=$(cat "$cache_file" 2>/dev/null)
-    fi
+fi
+
+# Fall back to stale cache whenever we don't have fresh data — including
+# while backing off, so the bars keep showing the last known numbers (with
+# the stale warning below) instead of vanishing entirely.
+if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
+    usage_data=$(cat "$cache_file" 2>/dev/null)
 fi
 
 # Flag data that's stale well beyond the normal refresh cadence (fetches
