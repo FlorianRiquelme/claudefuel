@@ -35,7 +35,8 @@ The install is a **bundle**: every artifact below must be present and valid afte
    - Exists. Contents (including `claudefuel-version.json`) are owned by `statusline.sh` at runtime; install creates the directory but writes no files into it.
 4. **File `~/.claude/settings.json`:**
    - Is valid JSON.
-   - Contains `.statusLine == { "type": "command", "command": "~/.claude/statusline.sh" }`.
+   - Contains `.statusLine == { "type": "command", "command": "~/.claude/statusline.sh", "refreshInterval": 2 }`.
+   - `refreshInterval` (seconds; Claude Code minimum is 1) re-runs the bar on a timer in addition to event-driven updates, so countdowns and cap-ETA visibly move while the session idles. 2s leaves ~10× headroom over the measured warm render (~180ms), which never waits on the network (cache-first paint; stdin `rate_limits` needs no fetch at all).
    - Every other top-level key that existed before this run **must still exist with the same value**. This is the single most important invariant.
 
 The user's `~/.claude/claudefuel.json` is **not part of the bundle**. It is user-owned and never touched by install, upgrade, or uninstall.
@@ -134,11 +135,11 @@ Postcondition: every file that existed pre-install has a matching `*.bak-<TS>`.
 - Capture the list of pre-existing top-level keys: `jq -r 'keys[]' ~/.claude/settings.json | sort > /tmp/keys-before`.
 - Patch atomically:
   ```bash
-  jq '.statusLine = {type: "command", command: "~/.claude/statusline.sh"}' \
+  jq '.statusLine = {type: "command", command: "~/.claude/statusline.sh", refreshInterval: 2}' \
      ~/.claude/settings.json > ~/.claude/settings.json.tmp \
      && mv ~/.claude/settings.json.tmp ~/.claude/settings.json
   ```
-- Postcondition A: `jq -e '.statusLine.command == "~/.claude/statusline.sh"' ~/.claude/settings.json` exits 0.
+- Postcondition A: `jq -e '.statusLine.command == "~/.claude/statusline.sh" and .statusLine.refreshInterval == 2' ~/.claude/settings.json` exits 0.
 - Postcondition B: `jq -r 'keys[]' ~/.claude/settings.json | sort > /tmp/keys-after && diff /tmp/keys-before /tmp/keys-after` shows no removed keys (additions of `statusLine` are expected).
 
 ## Verify
@@ -162,6 +163,7 @@ After Verify passes, explain to the user in chat the user-visible bar behaviors 
 
 - **Drift signal (`↗ /claudefuel.update`).** Appears on Line 1 only when an upstream release is available. Invoking it routes to the upgrade skill.
 - **Cap-ETA (`~cap HH:MM-HH:MM`).** Appears on Line 3 next to the 5-hour `↻ <time>` reset cell only when the user is on track to hit the 5-hour cap before reset. A rough estimate (tilde + range — never a precise time) derived from average burn rate over the current window. Dormant when healthy; the cell shows only `↻ <time>` until burn rate exceeds reset-pace.
+- **Live tick.** The bar re-renders every 2 seconds (`statusLine.refreshInterval`), so time-based cells move on their own while the session idles. The natural pairing is `reset_display: "countdown"` (`↻ in 42m` instead of `↻ 5:53pm`) — offer it once here and point at `/claudefuel.configure` to switch; the default stays clock times.
 - **Consultation skills (`/claudefuel.why`, `/claudefuel.coach`).** `why` annotates the bar's current snapshot — burn rate vs reset-pace, the cap-ETA arithmetic, which visibility gates passed or failed, cache ages. `coach` answers usage questions in plain language ("can I finish this refactor before my 5h reset?") with a recommendation. Both read the machine-readable snapshot (`statusline.sh --snapshot`); the bar itself stays a dumb display.
 
 ## Upgrade

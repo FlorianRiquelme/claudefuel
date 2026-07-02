@@ -45,6 +45,14 @@ set -o pipefail # `a | b || c` must reflect a's failure, not b's success.
                 # masks the BSD failure on Linux and the fallback never
                 # runs, yielding empty time strings.
 
+# Injectable clock: CLAUDEFUEL_NOW=<epoch> freezes "now" for every
+# time-derived value (countdowns, cap-ETA math, cache ages) — the
+# determinism seam behind timer-tick tests and demo golden renders.
+# Unset (the only production state) reads the wall clock.
+cf_now() {
+    printf '%s' "${CLAUDEFUEL_NOW:-$(date +%s)}"
+}
+
 # ===== Cross-profile sibling caches (read-only) =====
 # Every profile that has rendered recently leaves a usage cache in
 # /tmp/claude, keyed by the same sha256-of-CLAUDE_CONFIG_DIR suffix the
@@ -85,7 +93,7 @@ claudefuel_format_age() {
 # Emits one line per cache found: <label>\t<cache_file>\t<age_seconds>
 claudefuel_known_profile_caches() {
     local now seen="" dir label cache mtime age
-    now=$(date +%s)
+    now=$(cf_now)
     set +f  # sibling scan needs globbing; restored immediately
     local dirs=( "$HOME/.claude" "$HOME"/.claude-* )
     set -f
@@ -172,7 +180,7 @@ fi
 # display stays dumb; the running LLM session does the explaining.
 # Schema is versioned via .schema.version; breaking field changes bump it.
 if [ "${1:-}" = "--snapshot" ]; then
-    snapshot_now=$(date +%s)
+    snapshot_now=$(cf_now)
 
     snapshot_suffix=""
     snapshot_profile="default"
@@ -539,7 +547,7 @@ claudefuel_drift_segment() {
         upstream_version=$(jq -r '.upstream_version // empty' "$cache_file" 2>/dev/null)
         local cache_mtime now cache_age
         cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
-        now=$(date +%s)
+        now=$(cf_now)
         cache_age=$(( now - ${cache_mtime:-0} ))
         [ "$cache_age" -ge "$ttl_seconds" ] && should_fetch=true
     else
@@ -668,7 +676,7 @@ fi
 is_token_expired() {
     local expires_at_ms="$1"
     [ -z "$expires_at_ms" ] || [ "$expires_at_ms" = "null" ] && return 0  # no expiry = treat as expired
-    local now_ms=$(( $(date +%s) * 1000 ))
+    local now_ms=$(( $(cf_now) * 1000 ))
     local buffer_ms=60000  # 60 seconds buffer
     [ "$now_ms" -ge $(( expires_at_ms - buffer_ms )) ]
 }
@@ -829,7 +837,7 @@ claudefuel_fetch_usage() {
         case "$retry_secs" in
             ''|*[!0-9]*) retry_secs=300 ;;
         esac
-        echo $(( $(date +%s) + retry_secs )) > "$retryafter_file"
+        echo $(( $(cf_now) + retry_secs )) > "$retryafter_file"
     fi
     rm -f "$hdr_file" 2>/dev/null
 }
@@ -837,7 +845,7 @@ claudefuel_fetch_usage() {
 needs_refresh=true
 usage_data=""
 cache_mtime=""
-now=$(date +%s)
+now=$(cf_now)
 
 # Cache-first paint: read whatever cache exists — fresh or stale — so the
 # render never waits on the network once a cache file is on disk.
@@ -1013,7 +1021,7 @@ claudefuel_fetch_prepaid() {
         case "$p_retry" in
             ''|*[!0-9]*) p_retry=300 ;;
         esac
-        echo $(( $(date +%s) + p_retry )) > "$retryafter_file"
+        echo $(( $(cf_now) + p_retry )) > "$retryafter_file"
     fi
     rm -f "$p_hdr" 2>/dev/null
 }
@@ -1022,7 +1030,7 @@ claudefuel_fetch_prepaid() {
 if [ -f "$prepaid_cache_file" ]; then
     prepaid_data=$(cat "$prepaid_cache_file" 2>/dev/null)
     p_mtime=$(stat -c %Y "$prepaid_cache_file" 2>/dev/null || stat -f %m "$prepaid_cache_file" 2>/dev/null)
-    p_age=$(( $(date +%s) - p_mtime ))
+    p_age=$(( $(cf_now) - p_mtime ))
     [ "$p_age" -ge "$prepaid_cache_max_age" ] && prepaid_stale=true
 fi
 
@@ -1164,7 +1172,7 @@ format_clock_time() {
 format_countdown() {
     local epoch=$1
     [ -z "$epoch" ] && return
-    local diff=$(( epoch - $(date +%s) ))
+    local diff=$(( epoch - $(cf_now) ))
     [ "$diff" -lt 0 ] && diff=0
     local d=$(( diff / 86400 )) h=$(( diff % 86400 / 3600 )) m=$(( diff % 3600 / 60 ))
     if [ "$d" -gt 0 ]; then
@@ -1203,7 +1211,7 @@ claudefuel_cap_epoch() {
     [ "$pct" -ge 10 ] 2>/dev/null || return 0
 
     local now window_started elapsed
-    now=$(date +%s)
+    now=$(cf_now)
     window_started=$(( reset_epoch - window_length ))
     elapsed=$(( now - window_started ))
     [ "$elapsed" -gt 0 ] || return 0
@@ -1232,7 +1240,7 @@ claudefuel_burn_chip() {
     [ "$pct" -ge 10 ] 2>/dev/null || return 0
 
     local now window_started elapsed
-    now=$(date +%s)
+    now=$(cf_now)
     window_started=$(( reset_epoch - window_length ))
     elapsed=$(( now - window_started ))
     [ "$elapsed" -gt 0 ] || return 0
@@ -1270,7 +1278,7 @@ claudefuel_cap_eta_segment() {
     [ -z "$cap_eta" ] && return 0
 
     local now
-    now=$(date +%s)
+    now=$(cf_now)
 
     # Horizon-scaled uncertainty: ±15% of the time-to-cap horizon,
     # floored at ±5min. Near caps get tight honest ranges; far caps
