@@ -23,6 +23,12 @@ Check these in order and report each result on its own line:
    ```
    Expected: exit 0, non-empty output.
 7. **Drift cache directory `$target_dir/cache/` exists or can be created.**
+8. **Native stdin path renders without network.** Claude Code ≥2.1.x passes `rate_limits` on stdin; when present it — not the OAuth cache — drives the 5h/7d bars.
+   ```bash
+   printf '{"model":{"display_name":"Claude"},"session_id":"t","rate_limits":{"five_hour":{"used_percentage":62,"resets_at":4070908800},"seven_day":{"used_percentage":31,"resets_at":4070995200}}}' \
+     | CLAUDEFUEL_OFFLINE=1 "$target_dir/statusline.sh"
+   ```
+   Expected: exit 0 and a line 2 containing `62%` and `31%` — proof the bars render from stdin alone, offline, regardless of cache state.
 
 Do **not** modify any files. If something is broken, tell the user which item failed and point them at `/claudefuel.update` (for version drift), `/claudefuel.rollback` (for a recent botched upgrade), or the install paste line (for missing artifacts).
 
@@ -50,6 +56,18 @@ Run this section only when the user asks about statusline latency (e.g. "doctor 
 4. **Interpret failures.** A `usage`, `prepaid`, or `drift` stage in the hundreds of ms or seconds means a network fetch ran in the foreground. That is expected only on the very first render after install (cold cache, synchronous fetch); on any later render it is a regression — report it and suggest `CLAUDEFUEL_OFFLINE=1` as a stopgap. A slow `jq-parse` or `render` stage points at process-spawn overhead on the machine itself (every render forks dozens of `jq`/`awk`/`date` processes), not at the network.
 
 Every future feature lands inside this budget — treat a budget breach after an upgrade as a reportable regression, not as the new normal.
+
+## Data provenance
+
+When the user asks where a number comes from (or whether the bars are trustworthy), report per-number sources:
+
+| Number | With stdin `rate_limits` (Claude Code ≥2.1.x, subscription auth) | Without (older Claude Code, fallback) |
+|---|---|---|
+| 5h / 7d bars, line-3 resets, cap-ETA/pace math | stdin — per-render fresh, zero network, agrees with Claude Code's own UI by construction; **never** carries an age marker | OAuth usage cache (`/tmp/claude/statusline-usage-cache*.json`), age markers apply |
+| `extra` balance | OAuth prepaid cache — always; own `·age` marker | same |
+| fleet view / `⇄` switch hint | sibling profiles' OAuth caches — always; ages shown | same |
+
+Check 8 proves the stdin path; check 6's sample (no `rate_limits`) exercises the fallback. If check 8 shows `62%`/`31%` but the user's live bar carries `·age` markers on the 5h cell, their Claude Code is not sending `rate_limits` (too old, or non-subscription auth) — the bar is on the OAuth fallback and that is expected, not a defect.
 
 ## Failure glyphs on the bar
 
