@@ -185,6 +185,34 @@ claudefuel_switch_hint() {
     printf "⇄ %s %s%% (%s)" "$best_label" "$best_pct" "$(claudefuel_format_age "$best_age")"
 }
 
+# ===== Shared-window session heartbeats =====
+# Every render touches /tmp/claude/statusline-sessions<suffix>/s-<id>,
+# so the sessions sharing one account window (the documented real-world
+# confusion behind "usage stale / bar red") become countable. A
+# heartbeat fresher than 5 minutes = a live session on this window.
+# Usage: claudefuel_session_count <sessions_dir> [prune]
+# Echoes the fresh count; with "prune", also removes expired heartbeats
+# (the render path prunes; --fleet stays a pure read).
+claudefuel_session_count() {
+    local dir="$1" mode="${2:-}"
+    [ -d "$dir" ] || { echo 0; return; }
+    local now count f m
+    now=$(cf_now)
+    count=0
+    set +f  # heartbeat scan needs globbing; restored immediately
+    for f in "$dir"/*; do
+        [ -f "$f" ] || continue
+        m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
+        if [ -n "$m" ] && [ $(( now - m )) -lt 300 ]; then
+            count=$(( count + 1 ))
+        elif [ "$mode" = "prune" ]; then
+            rm -f "$f" 2>/dev/null
+        fi
+    done
+    set -f
+    echo "$count"
+}
+
 # ===== Config report: shared merge/lint of claudefuel.json =====
 # Emits {status, errors, warnings, info, effective, overridden_keys} for
 # a config path. The single source of truth for "what does this config
@@ -222,7 +250,7 @@ claudefuel_config_report() {
     jq --argjson d "$defaults" '
         def line1_tokens: ["model","session","ctx","thinking","effort","agent","activity","drift"];
         def column_tokens: ["5h","7d","extra"];
-        def hide_tokens: line1_tokens + column_tokens + ["profile","cap_eta","projection"];
+        def hide_tokens: line1_tokens + column_tokens + ["profile","cap_eta","projection","sessions"];
         def known_keys: ["version","theme","color_thresholds","reset_display","segments"];
 
         # Nearest-match hint for a mistyped token, prefix-based ("7day" →
@@ -319,8 +347,10 @@ if [ "$1" = "--fleet" ]; then
                 "$prepaid_file" 2>/dev/null)
             [ -n "$prepaid_json" ] || prepaid_json="null"
         fi
+        sessions=$(claudefuel_session_count "/tmp/claude/statusline-sessions${suffix}")
         jq -c --arg profile "$label" --argjson age "$age" --argjson prepaid "$prepaid_json" \
-            '{profile: $profile, cache_age_seconds: $age,
+            --argjson sessions "$sessions" \
+            '{profile: $profile, cache_age_seconds: $age, sessions: $sessions,
               five_hour: (.five_hour // null), seven_day: (.seven_day // null),
               extra_usage: (.extra_usage // null), prepaid: $prepaid}' \
             "$cache" 2>/dev/null
@@ -1174,6 +1204,17 @@ usage_lock_dir="/tmp/claude/statusline-usage-fetch${CACHE_SUFFIX}.lock"
 cache_max_age=300
 mkdir -p /tmp/claude
 
+# Heartbeat: mark this session live on this account window. The id is
+# sanitized to a filename-safe alphabet before it touches the path.
+sessions_dir="/tmp/claude/statusline-sessions${CACHE_SUFFIX}"
+if [ -z "$demo_state" ] && [ -n "$session_id" ]; then
+    session_hb=$(printf '%s' "$session_id" | tr -cd 'A-Za-z0-9._-')
+    if [ -n "$session_hb" ]; then
+        mkdir -p "$sessions_dir" 2>/dev/null \
+            && touch "$sessions_dir/s-${session_hb}" 2>/dev/null
+    fi
+fi
+
 # Demo renders never touch the user's real caches: point every cache
 # path at /dev/null (fails -f, so nothing is read) — the canned demo
 # data is injected after the fetch/staleness machinery, which
@@ -1970,6 +2011,19 @@ if [ "$usage_source" = "stdin" ] \
             line3+="$col_reset"
         fi
     done
+
+    # Shared-window session count — `⧉ N` when more than one live session
+    # is drawing on this account window. Explains the classic confusion
+    # ("why is my bar hot / stale? — eleven other panes share this
+    # window") right where it arises. Subject to the calm-cockpit
+    # collapse below: nominal windows still earn zero extra rows.
+    # Hide-only token "sessions". Detail view: /claudefuel.fleet.
+    if [ -z "$demo_state" ] && ! segment_hidden sessions; then
+        session_count=$(claudefuel_session_count "$sessions_dir" prune)
+        if [ "$session_count" -gt 1 ]; then
+            line2+="${sep}${dim}⧉ ${session_count}${reset}"
+        fi
+    fi
 
     # Cross-profile switch hint — sibling headroom when the active profile
     # runs hot. Reads sibling on-disk caches only; see claudefuel_switch_hint.

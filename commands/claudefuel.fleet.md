@@ -10,16 +10,19 @@ Render a compact fleet table of every Claude Code profile claudefuel has rendere
    "$target_dir/statusline.sh" --fleet
    ```
    Each output line is one JSON object:
-   `{profile, cache_age_seconds, five_hour: {utilization, resets_at}, seven_day: {utilization, resets_at}, extra_usage, prepaid: {amount, currency}}`
+   `{profile, cache_age_seconds, sessions, five_hour: {utilization, resets_at}, seven_day: {utilization, resets_at}, extra_usage, prepaid: {amount, currency}}`
+
+   `sessions` counts the live Claude Code sessions currently drawing on that profile's account window (heartbeats fresher than 5 minutes). More than 1 means the window is shared — the usual explanation for a bar that runs hot or stale faster than one session can account for.
 
 2. **If the output is empty**, tell the user no profile caches were found — a profile appears here only after its status bar has rendered at least once (which writes `/tmp/claude/statusline-usage-cache*.json`). Do not fetch anything on their behalf.
 
 3. **Render a markdown table**, one row per profile:
 
-   | Profile | 5h | 7d | resets (5h) | balance | data age |
-   |---|---|---|---|---|---|
-   | work | `●●○○○○○○○○` 18% | 32% | 4:30pm | €59.29 | 2m |
+   | Profile | sessions | 5h | 7d | resets (5h) | balance | data age |
+   |---|---|---|---|---|---|---|
+   | work | ⧉ 3 | `●●○○○○○○○○` 18% | 32% | 4:30pm | €59.29 | 2m |
 
+   - `sessions` from the heartbeat count; render `—` when 0 (no live session on that profile right now).
    - Build the 5h bar from `five_hour.utilization` as ten `●`/`○` cells, with the percent next to it.
    - `resets (5h)` is `five_hour.resets_at` converted to local time; omit when null.
    - `balance` is `prepaid.amount` in cents, formatted as `<currency symbol><amount/100>` (EUR → €, GBP → £, JPY → ¥, otherwise $); leave the cell empty when `prepaid` is null.
