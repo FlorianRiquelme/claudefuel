@@ -141,7 +141,10 @@ line_count() {
 }
 
 @test ">=90%: pct renders in inverse video (weight, not hue alone)" {
-  seed_usage_cache 92 10800 12 172800
+  # remaining=1200 (20min) at 92% keeps burn rate just under reset-pace
+  # (ratio ~0.99) so burn-radar's chip stays dormant and the plain
+  # percent is what gets escalated — the case this test targets.
+  seed_usage_cache 92 1200 12 172800
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p')

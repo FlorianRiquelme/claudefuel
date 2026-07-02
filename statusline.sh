@@ -3,8 +3,8 @@
 # Claude Code Status Line — Multi-Account Aware
 #
 # Line 1: [profile] Model | ctx <bar> <used>/<total> | thinking: on/off | effort: <level> | ↗ /claudefuel.update
-# Line 2: 5h: <bar> % [·age] | 7d: <bar> % | extra: <currency><balance> [·age]
-# Line 3: ↻ <time> · ~cap <range> | ↻ <datetime> | ↻ <date>
+# Line 2: 5h: <bar> % [·age] (or ~<left> ×<ratio> when burning hot) | 7d: <bar> % | extra: <currency><balance> [·age]
+# Line 3: ↻ <time> · ~cap <range> · slow ≤<ratio>× · ⚓ <gap> | ↻ <datetime> | ↻ <date>
 #
 # Honest instrument: ·age marks stale cached data (never rendered as fresh);
 # when no usage data is available, line 2 becomes a one-glyph diagnosis plus
@@ -866,7 +866,7 @@ format_clock_time() {
 
 # Format an epoch as a compact countdown to it (e.g. "in 42m",
 # "in 2h05m", "in 4d21h"). Used in place of format_reset_time when
-# reset_display=countdown is configured.
+# reset_display=countdown is configured (or CLAUDEFUEL_RESET_COUNTDOWN=1).
 format_countdown() {
     local epoch=$1
     [ -z "$epoch" ] && return
@@ -880,6 +880,18 @@ format_countdown() {
     else
         printf "in %dm" "$m"
     fi
+}
+
+# Compact duration formatter: seconds → "1h50m" / "42m".
+# Usage: format_duration <seconds>
+format_duration() {
+    local secs=$1
+    awk -v s="$secs" 'BEGIN {
+        if (s < 0) s = 0
+        h = int(s / 3600); m = int((s % 3600) / 60)
+        if (h > 0) printf "%dh%02dm", h, m
+        else printf "%dm", m
+    }'
 }
 
 # Projected cap epoch for a usage window — the governing-constraint
@@ -909,28 +921,94 @@ claudefuel_cap_epoch() {
     printf "%s" "$cap_eta"
 }
 
+# Burn chip — time-at-pace + normalized burn ratio for the 5h cell on
+# Line 2 (e.g. "~1h38m ×1.4"): time until projected 100% at the current
+# burn rate, and that rate as a multiple of reset-pace. Stateless: pure
+# function of one snapshot. Shares the cap-ETA gates (ADR-0004): dormant
+# when burn rate <= reset-pace (ratio ≤1.0 — you'll never hit the cap)
+# or pct_used < 10% (noise floor).
+# Usage: claudefuel_burn_chip <pct_used> <reset_at_epoch>
+# Echoes "~XhYYm ×N.N" or empty.
+claudefuel_burn_chip() {
+    local pct=$1
+    local reset_epoch=$2
+    local window_length=$((5 * 3600))
+
+    [ -z "$reset_epoch" ] && return 0
+    [ "$pct" -ge 10 ] 2>/dev/null || return 0
+
+    local now window_started elapsed
+    now=$(date +%s)
+    window_started=$(( reset_epoch - window_length ))
+    elapsed=$(( now - window_started ))
+    [ "$elapsed" -gt 0 ] || return 0
+
+    # ratio > 1.0 ⟺ pct/elapsed > 100/window — exact in integers.
+    [ $(( pct * window_length )) -gt $(( 100 * elapsed )) ] || return 0
+
+    local time_to_cap ratio
+    time_to_cap=$(awk "BEGIN {printf \"%d\", (100 - $pct) * $elapsed / $pct}")
+    ratio=$(awk "BEGIN {printf \"%.1f\", $pct * $window_length / (100 * $elapsed)}")
+
+    printf "~%s ×%s" "$(format_duration "$time_to_cap")" "$ratio"
+}
+
 # Cap-ETA segment — predicted wall-clock 100% time for the 5h window.
 # Stateless: computed from a single snapshot (pct + reset epoch), no
 # samples persisted across renders. Renders only when burn rate exceeds
 # reset-pace AND pct_used >= 10%. See ADR-0004.
+# When it fires, two prescriptive extensions ride along (same snapshot
+# algebra, no extra gates of their own beyond the noted dormancies):
+#   slow ≤N.N× — steer-to: the pace multiple (vs reset-pace) that makes
+#                the remaining budget last until reset. Floored to one
+#                decimal so the instruction never overstates the allowance.
+#   ⚓ XhYYm    — stranding gap: dead time between projected cap and
+#                reset. Dormant under 5 minutes (not actionable).
 # Usage: claudefuel_cap_eta_segment <pct_used> <reset_at_epoch>
-# Echoes "~cap HH:MMxm-HH:MMxm" or empty.
+# Echoes "~cap HH:MMxm-HH:MMxm · slow ≤N.N× · ⚓ XhYYm" or empty.
 claudefuel_cap_eta_segment() {
     local pct=$1
     local reset_epoch=$2
+    local window_length=$((5 * 3600))
 
     local cap_eta
-    cap_eta=$(claudefuel_cap_epoch "$pct" "$reset_epoch" $((5 * 3600)))
+    cap_eta=$(claudefuel_cap_epoch "$pct" "$reset_epoch" "$window_length")
     [ -z "$cap_eta" ] && return 0
 
-    local cap_low=$(( cap_eta - 900 )) cap_high=$(( cap_eta + 900 ))
+    local now
+    now=$(date +%s)
+
+    # Horizon-scaled uncertainty: ±15% of the time-to-cap horizon,
+    # floored at ±5min. Near caps get tight honest ranges; far caps
+    # get wide ones (the fixed ±15min band claimed false precision
+    # at long horizons and false vagueness at short ones).
+    local time_to_cap=$(( cap_eta - now ))
+    local half_band
+    half_band=$(awk "BEGIN {h = $time_to_cap * 0.15; if (h < 300) h = 300; printf \"%d\", h}")
+
+    local cap_low=$(( cap_eta - half_band )) cap_high=$(( cap_eta + half_band ))
     local low_str high_str
     low_str=$(date -j -r "$cap_low" +"%l:%M%p" 2>/dev/null | sed 's/^ //' | tr '[:upper:]' '[:lower:]' \
         || date -d "@$cap_low" +"%l:%M%P" 2>/dev/null | sed 's/^ //')
     high_str=$(date -j -r "$cap_high" +"%l:%M%p" 2>/dev/null | sed 's/^ //' | tr '[:upper:]' '[:lower:]' \
         || date -d "@$cap_high" +"%l:%M%P" 2>/dev/null | sed 's/^ //')
 
-    printf "~cap %s-%s" "$low_str" "$high_str"
+    local segment="~cap ${low_str}-${high_str}"
+
+    # Steer-to: floor((100-pct)/remaining ÷ reset-pace, 1 decimal).
+    # Always < 1.0 when cap-ETA fires, so it is always a slow-down.
+    local remaining=$(( reset_epoch - now ))
+    local steer
+    steer=$(awk "BEGIN {printf \"%.1f\", int((100 - $pct) * $window_length * 10 / (100 * $remaining)) / 10}")
+    segment+=" · slow ≤${steer}×"
+
+    # Stranding gap: dormant under 5 minutes.
+    local gap=$(( reset_epoch - cap_eta ))
+    if [ "$gap" -ge 300 ]; then
+        segment+=" · ⚓ $(format_duration "$gap")"
+    fi
+
+    printf "%s" "$segment"
 }
 
 # Format a cache age in seconds as a compact marker value ("9m", "5h").
@@ -972,7 +1050,9 @@ pad_column() {
 # windows before either column renders.
 column_5h() {
     local five_hour_reset five_hour_bar
-    if [ "$cfg_reset_display" = "countdown" ]; then
+    # `↻ <time>` is the default; CLAUDEFUEL_RESET_COUNTDOWN=1 (env, opt-in)
+    # or reset_display: "countdown" (config) render `↻ in XhYYm` instead.
+    if [ "$CLAUDEFUEL_RESET_COUNTDOWN" = "1" ] || [ "$cfg_reset_display" = "countdown" ]; then
         five_hour_reset=$(format_countdown "$five_hour_reset_epoch")
     else
         five_hour_reset=$(format_reset_time "$five_hour_reset_iso" "time")
@@ -980,18 +1060,34 @@ column_5h() {
     five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
 
     # ≥90% escalation: shape/weight, not hue alone — ⚠ label prefix and
-    # inverse-video pct. ▸ marks the governing constraint. Prefix length
+    # inverse-video value. ▸ marks the governing constraint. Prefix length
     # is tracked numerically (multibyte glyphs defeat ${#} under some locales).
     local col1_prefix="" col1_prefix_len=0
     [ "$governing" = "5h" ] && { col1_prefix+="▸"; col1_prefix_len=$(( col1_prefix_len + 1 )); }
-    local col1_pct_str="${cyan}${five_hour_pct}%${reset}"
+    local escalate=false
     if [ "$five_hour_pct" -ge 90 ]; then
         col1_prefix+="⚠"; col1_prefix_len=$(( col1_prefix_len + 1 ))
-        col1_pct_str="${red}${inverse}${five_hour_pct}%${reset}"
+        escalate=true
     fi
 
-    # Calculate visible length: prefix + "5h: " + bar + " " + "XX%"
-    local col1_bar_vis_len=$(( col1_prefix_len + 4 + bar_width + 1 + ${#five_hour_pct} + 1 ))
+    # Burn chip: when burning hot, lead with time-at-pace + ratio and
+    # demote the percent to the bar fill alone. Dormant otherwise (plain
+    # percent shows). The >=90% escalation wraps whichever value is shown.
+    local burn_chip_plain col1_value_plain col1_pct_str
+    burn_chip_plain=$(claudefuel_burn_chip "$five_hour_pct" "$five_hour_reset_epoch")
+    if [ -n "$burn_chip_plain" ]; then
+        col1_value_plain="$burn_chip_plain"
+    else
+        col1_value_plain="${five_hour_pct}%"
+    fi
+    if $escalate; then
+        col1_pct_str="${red}${inverse}${col1_value_plain}${reset}"
+    else
+        col1_pct_str="${cyan}${col1_value_plain}${reset}"
+    fi
+
+    # Calculate visible length: prefix + "5h: " + bar + " " + value
+    local col1_bar_vis_len=$(( col1_prefix_len + 4 + bar_width + 1 + ${#col1_value_plain} ))
     local col1_bar_raw="${white}${col1_prefix}5h:${reset} ${five_hour_bar} ${col1_pct_str}"
 
     # Staleness age marker — one snapshot drives lines 2–3, so one marker
@@ -1017,9 +1113,10 @@ column_5h() {
         col_reset+=" ${dim}· ${cap_eta_plain}${reset}"
     fi
 
-    # Widen col1 when cap-ETA grows the reset cell — keeps Line 2/3 pipes aligned.
+    # Widen col1 when cap-ETA or the burn chip grows a cell — keeps Line 2/3 pipes aligned.
     local col1w_actual=$col1w
     [ "${#col1_reset_plain}" -gt "$col1w_actual" ] && col1w_actual="${#col1_reset_plain}"
+    [ "$col1_bar_vis_len" -gt "$col1w_actual" ] && col1w_actual="$col1_bar_vis_len"
     col_bar=$(pad_column "$col1_bar_raw" "$col1_bar_vis_len" "$col1w_actual")
     col_reset=$(pad_column "$col_reset" "${#col1_reset_plain}" "$col1w_actual")
 }

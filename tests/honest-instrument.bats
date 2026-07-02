@@ -59,7 +59,10 @@ seed_usage_cache() {
   local enabled=${1:-false} used_credits=${2:-350}
   local now fh_iso sd_iso
   now=$(date +%s)
-  fh_iso=$(iso_from_epoch $(( now + 10800 )))
+  # 1h to reset (4h elapsed of the 5h window) keeps burn rate under
+  # reset-pace at 62% (ratio ~0.78) — burn-radar's chip stays dormant so
+  # the plain percent renders, which is what these tests check for.
+  fh_iso=$(iso_from_epoch $(( now + 3600 )))
   sd_iso=$(iso_from_epoch $(( now + 432000 )))
   cat > "$USAGE_CACHE" <<EOF
 {
