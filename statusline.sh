@@ -20,6 +20,15 @@
 # rate — carries a ▸ marker (stable layout, no reordering). The extra
 # column renders only once spend is live (>$0).
 #
+# Native-first data: Claude Code ≥2.1.x passes rate_limits on stdin
+# (five_hour/seven_day used_percentage + resets_at epoch). When present it
+# is the source of truth for the 5h/7d bars and Line-3 reset times —
+# per-render fresh (no age marker by construction), zero network, always
+# in agreement with Claude Code's own UI. The OAuth fetch path remains as
+# enrichment (prepaid `extra` balance, sibling caches for
+# /claudefuel.fleet) and as the full fallback when the field is absent
+# (older Claude Code, non-subscription auth).
+#
 # Supports CLAUDE_CONFIG_DIR for per-account usage display.
 # When CLAUDE_CONFIG_DIR is set, keychain lookups and cache files are isolated per account.
 #
@@ -463,6 +472,25 @@ thinking_val=$(echo "$input" | jq -r '.thinking.enabled // false')
 # Absent when the current model does not support the effort parameter.
 effort_level=$(echo "$input" | jq -r '.effort.level // empty')
 
+# ===== Native-first usage source (stdin rate_limits) =====
+# Conditional field (older Claude Code and non-subscription auth omit it)
+# — never hard-required. Both windows' used_percentage must parse as
+# numbers for stdin to take over; anything less falls back to the
+# OAuth/cache path unchanged. used_percentage may be fractional;
+# resets_at is a unix epoch. Values are validated here and derived in
+# the window-snapshot block before the column loop.
+usage_source="oauth"
+rl_vals=$(echo "$input" | jq -r '[
+    (.rate_limits.five_hour.used_percentage // ""),
+    (.rate_limits.five_hour.resets_at // ""),
+    (.rate_limits.seven_day.used_percentage // ""),
+    (.rate_limits.seven_day.resets_at // "")
+  ] | @tsv' 2>/dev/null)
+IFS=$'\t' read -r rl_5h_pct rl_5h_reset rl_7d_pct rl_7d_reset <<< "$rl_vals"
+case "$rl_5h_pct" in ''|*[!0-9.]*) rl_5h_pct="" ;; esac
+case "$rl_7d_pct" in ''|*[!0-9.]*) rl_7d_pct="" ;; esac
+[ -n "$rl_5h_pct" ] && [ -n "$rl_7d_pct" ] && usage_source="stdin"
+
 cf_timing_mark jq-parse
 
 # Fetch the upstream version header and atomically publish it to the drift
@@ -863,9 +891,12 @@ usage_failure=""  # one of: dep, auth, net — set when a fresh fetch was imposs
 if $needs_refresh && $should_attempt && [ -z "$CLAUDEFUEL_OFFLINE" ] \
     && claudefuel_try_lock "$usage_lock_dir" "$now" 15; then
     touch "$attempt_file" 2>/dev/null
-    if [ -n "$usage_data" ]; then
-        # Stale value already painted this render; the detached refresh
-        # lands the fresh payload (or a 429 cooldown) for the next one.
+    if [ -n "$usage_data" ] || [ "$usage_source" = "stdin" ]; then
+        # Stale value already painted this render (or stdin carries the
+        # bars and the fetch only enriches extra/fleet); the detached
+        # refresh lands the fresh payload (or a 429 cooldown) for the
+        # next one. Native-first contract: a render backed by stdin
+        # rate_limits never waits on the network, not even first-ever.
         (
             token=$(get_oauth_token)
             if [ -n "$token" ] && [ "$token" != "null" ]; then
@@ -903,10 +934,14 @@ fi
 #   - during a server-imposed 429 cooldown, the exact retry deadline;
 #   - otherwise, the next scheduled attempt (cache_max_age after the last).
 # The epoch is formatted to a clock time at render (format_clock_time).
+# Provenance rule: the markers describe the DATA DRIVING THE BARS. When
+# stdin rate_limits drives them the bars are per-render fresh, so no
+# marker fires regardless of how old the OAuth cache is (the prepaid
+# cell keeps its own age marker — separate cache, separate provenance).
 usage_stale=false
 usage_stale_age=""
 usage_next_epoch=""
-if [ -n "$usage_data" ] && [ -n "$cache_mtime" ]; then
+if [ "$usage_source" = "oauth" ] && [ -n "$usage_data" ] && [ -n "$cache_mtime" ]; then
     data_age=$(( now - cache_mtime ))
     if [ "$data_age" -ge "$cache_max_age" ]; then
         usage_stale_age=$data_age
@@ -1080,16 +1115,24 @@ iso_to_epoch() {
     return 1
 }
 
-# Format ISO reset time to compact local time
-# Usage: format_reset_time <iso_string> <style: time|datetime|date>
-format_reset_time() {
-    local iso_str="$1"
-    local style="$2"
-    [ -z "$iso_str" ] || [ "$iso_str" = "null" ] && return
+# Resolve a stdin rate_limits resets_at value to epoch seconds. The
+# documented shape is a unix epoch (digits pass through untouched — no
+# date(1) parsing, so no BSD/GNU divergence); anything else defensively
+# goes through iso_to_epoch. Failure renders no reset cell, but the bar
+# itself still paints.
+resolve_stdin_epoch() {
+    case "$1" in
+        '') return 0 ;;
+        *[!0-9]*) iso_to_epoch "$1" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
 
-    # Parse ISO datetime and convert to local time (cross-platform)
-    local epoch
-    epoch=$(iso_to_epoch "$iso_str")
+# Format an epoch to compact local time
+# Usage: format_epoch_time <epoch> <style: time|datetime|date>
+format_epoch_time() {
+    local epoch="$1"
+    local style="$2"
     [ -z "$epoch" ] && return
 
     # Format based on style (try BSD date first, then GNU date)
@@ -1111,16 +1154,12 @@ format_reset_time() {
 }
 
 # Format an epoch (seconds) as a local clock time like "5:53pm".
-# Same style as format_reset_time's "time" mode, but takes an epoch directly.
 format_clock_time() {
-    local epoch="$1"
-    [ -z "$epoch" ] && return
-    date -j -r "$epoch" +"%l:%M%p" 2>/dev/null | sed 's/^ //' | tr '[:upper:]' '[:lower:]' || \
-    date -d "@$epoch" +"%l:%M%P" 2>/dev/null | sed 's/^ //'
+    format_epoch_time "$1" "time"
 }
 
 # Format an epoch as a compact countdown to it (e.g. "in 42m",
-# "in 2h05m", "in 4d21h"). Used in place of format_reset_time when
+# "in 2h05m", "in 4d21h"). Used in place of format_epoch_time when
 # reset_display=countdown is configured (or CLAUDEFUEL_RESET_COUNTDOWN=1).
 format_countdown() {
     local epoch=$1
@@ -1299,10 +1338,10 @@ pad_column() {
 # are pure data — Line 3 always mirrors Line 2's column order.
 
 # ---- 5-hour ----
-# five_hour_pct / five_hour_reset_iso / five_hour_reset_epoch and the
-# $governing marker are precomputed once before the column loop (see the
-# window-snapshot block below) — the governing constraint needs both
-# windows before either column renders.
+# five_hour_pct / five_hour_reset_epoch and the $governing marker are
+# precomputed once before the column loop (see the window-snapshot block
+# below) — the governing constraint needs both windows before either
+# column renders.
 column_5h() {
     local five_hour_reset five_hour_bar
     # `↻ <time>` is the default; CLAUDEFUEL_RESET_COUNTDOWN=1 (env, opt-in)
@@ -1310,7 +1349,7 @@ column_5h() {
     if [ "$CLAUDEFUEL_RESET_COUNTDOWN" = "1" ] || [ "$cfg_reset_display" = "countdown" ]; then
         five_hour_reset=$(format_countdown "$five_hour_reset_epoch")
     else
-        five_hour_reset=$(format_reset_time "$five_hour_reset_iso" "time")
+        five_hour_reset=$(format_epoch_time "$five_hour_reset_epoch" "time")
     fi
     five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
 
@@ -1382,7 +1421,7 @@ column_7d() {
     if [ "$cfg_reset_display" = "countdown" ]; then
         seven_day_reset=$(format_countdown "$seven_day_reset_epoch")
     else
-        seven_day_reset=$(format_reset_time "$seven_day_reset_iso" "datetime")
+        seven_day_reset=$(format_epoch_time "$seven_day_reset_epoch" "datetime")
     fi
     seven_day_bar=$(build_bar "$seven_day_pct" "$bar_width")
 
@@ -1409,6 +1448,10 @@ column_7d() {
 # on the balance itself: a depleted balance with live spend still renders
 # (an out-of-credit alarm must never hide).
 column_extra() {
+    # OAuth enrichment: extra_usage lives only in the usage cache. With
+    # stdin driving the bars the cache may legitimately be absent — the
+    # column stays dormant until a background fetch lands one.
+    [ -n "$usage_data" ] || return 0
     local extra_enabled extra_spent extra_spend_live prepaid_raw_amount
     extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')
     extra_spent=$(echo "$usage_data" | jq -r '.extra_usage.used_credits // 0')
@@ -1437,19 +1480,28 @@ column_extra() {
 line2=""
 line3=""
 
-if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
+if [ "$usage_source" = "stdin" ] \
+    || { [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; }; then
     bar_width=10
     col1w=19
     col2w=19
 
     # ---- Window snapshots (extracted up front: the governing-constraint
-    # marker needs both windows before either column renders) ----
-    five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
-    five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
-    five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
-    seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
-    seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
-    seven_day_reset_epoch=$(iso_to_epoch "$seven_day_reset_iso")
+    # marker needs both windows before either column renders). Native
+    # first: stdin rate_limits when present, the OAuth cache otherwise. ----
+    if [ "$usage_source" = "stdin" ]; then
+        five_hour_pct=$(printf '%s' "$rl_5h_pct" | awk '{printf "%.0f", $1}')
+        five_hour_reset_epoch=$(resolve_stdin_epoch "$rl_5h_reset")
+        seven_day_pct=$(printf '%s' "$rl_7d_pct" | awk '{printf "%.0f", $1}')
+        seven_day_reset_epoch=$(resolve_stdin_epoch "$rl_7d_reset")
+    else
+        five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
+        five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
+        five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
+        seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
+        seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
+        seven_day_reset_epoch=$(iso_to_epoch "$seven_day_reset_iso")
+    fi
 
     # ---- Governing constraint (▸) — whichever window would hit 100%
     # first at the current burn rate, dive-computer style. A marker, not
