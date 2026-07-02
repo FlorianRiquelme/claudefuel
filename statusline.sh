@@ -130,9 +130,11 @@ if [ -n "$effort_level" ]; then
     line1+=" ${dim}|${reset} effort: ${cyan}${effort_level}${reset}"
 fi
 
-# Drift detection — when the cached upstream version differs from the
+# Drift detection — when the cached upstream version is newer than the
 # installed version, append a single '↗ /claudefuel.update' segment to
-# line 1. No count, no growth in bar height, no segment when equal.
+# line 1. No count, no growth in bar height, no segment when equal or
+# when the install is ahead of the cache (a fresh local update can
+# outrun the 6h cache TTL and a lagging raw.githubusercontent CDN copy).
 # Cache lives at $CLAUDE_CONFIG_DIR/cache/claudefuel-version.json
 # (or ~/.claude/cache/), TTL 6h. When stale, attempt one short-timeout
 # fetch of raw statusline.sh from main; on failure keep the stale value
@@ -175,6 +177,13 @@ claudefuel_drift_segment() {
 
     [ -z "$upstream_version" ] && return 0
     [ "$upstream_version" = "$installed_version" ] && return 0
+
+    # Same sort -V algorithm as compare_versions in /claudefuel.update:
+    # prompt only when upstream is strictly newer than installed.
+    local lowest
+    lowest=$(printf '%s\n%s\n' "$installed_version" "$upstream_version" \
+        | sort -V | head -n1)
+    [ "$lowest" = "$upstream_version" ] && return 0
 
     printf "↗ /claudefuel.update"
 }
