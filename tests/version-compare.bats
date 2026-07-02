@@ -8,6 +8,7 @@
 # is mechanically testable. If you change one, change the other.
 
 setup() {
+  export FORCE_HYPERLINK=0  # hermetic: the host terminal must not toggle OSC 8
   source "${BATS_TEST_DIRNAME}/fixtures/compare_versions.sh"
 }
 

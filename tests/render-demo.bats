@@ -12,6 +12,7 @@
 #   - unknown state is a usage error (exit 2)
 
 setup() {
+  export FORCE_HYPERLINK=0  # hermetic: the host terminal must not toggle OSC 8
   CLAUDE_CONFIG_DIR=$(mktemp -d)
   export CLAUDE_CONFIG_DIR
   mkdir -p "$CLAUDE_CONFIG_DIR/cache"

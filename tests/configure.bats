@@ -15,6 +15,7 @@
 SAMPLE_STDIN='{"model":{"display_name":"Claude"},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":50000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"thinking":{"enabled":true},"effort":{"level":"high"}}'
 
 setup() {
+  export FORCE_HYPERLINK=0  # hermetic: the host terminal must not toggle OSC 8
   CLAUDE_CONFIG_DIR=$(mktemp -d)
   export CLAUDE_CONFIG_DIR
   mkdir -p "$CLAUDE_CONFIG_DIR/cache"
@@ -432,7 +433,7 @@ validate() {
   # validate report's effective block equals the absent-file effective.
   seed_usage_cache
   baseline=$(run_bar)
-  write_config '{"version":1,"theme":"default","color_thresholds":{"orange":50,"yellow":70,"red":90},"reset_display":"clock","segments":{"order":{"line1":["model","session","ctx","thinking","effort","agent","activity","drift"],"columns":["5h","7d","extra"]},"hide":[]}}'
+  write_config '{"version":1,"theme":"default","color_thresholds":{"orange":50,"yellow":70,"red":90},"reset_display":"clock","segments":{"order":{"line1":["model","session","ctx","thinking","effort","agent","activity","pr","drift"],"columns":["5h","7d","extra"]},"hide":[]}}'
   configured=$(run_bar)
   [ "$baseline" = "$configured" ]
 
