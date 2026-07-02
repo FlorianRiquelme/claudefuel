@@ -393,6 +393,11 @@ cache_file="/tmp/claude/statusline-usage-cache${CACHE_SUFFIX}.json"
 # request with no backoff, which can keep an upstream rate limit alive
 # indefinitely while silently showing stale numbers.
 attempt_file="/tmp/claude/statusline-usage-attempt${CACHE_SUFFIX}"
+# When the API rate-limits us (429) it returns a Retry-After telling us how
+# long to stay quiet — often tens of minutes. This file records that deadline
+# (absolute epoch seconds). Poking the endpoint again before it passes keeps
+# the rate limit alive indefinitely, so honoring it is what lets usage recover.
+retryafter_file="/tmp/claude/statusline-usage-retryafter${CACHE_SUFFIX}"
 cache_max_age=60  # seconds between API calls
 mkdir -p /tmp/claude
 
@@ -420,41 +425,85 @@ if [ -f "$attempt_file" ]; then
     [ "$attempt_age" -lt "$cache_max_age" ] && should_attempt=false
 fi
 
+# Honor a server-issued Retry-After: stay quiet until the deadline passes.
+# This dominates the 60s cadence above — a 429 asks for a much longer wait,
+# and retrying sooner just re-arms the rate limit.
+if [ -f "$retryafter_file" ]; then
+    retry_deadline=$(cat "$retryafter_file" 2>/dev/null)
+    if [ -n "$retry_deadline" ] && [ "$now" -lt "$retry_deadline" ]; then
+        should_attempt=false
+    fi
+fi
+
 # Fetch fresh data if cache is stale
 if $needs_refresh && $should_attempt; then
     touch "$attempt_file" 2>/dev/null
     token=$(get_oauth_token)
     if [ -n "$token" ] && [ "$token" != "null" ]; then
-        response=$(curl -s --max-time 5 \
+        # Capture response headers so we can see the HTTP status and any
+        # Retry-After — a bare `curl -s` throws both away, which is how we
+        # ended up hammering a rate-limited endpoint blind.
+        hdr_file="/tmp/claude/statusline-usage-hdr${CACHE_SUFFIX}.$$"
+        response=$(curl -s -D "$hdr_file" --max-time 5 \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $token" \
             -H "anthropic-beta: oauth-2025-04-20" \
             -H "User-Agent: claude-code/2.1.34" \
             "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+        http_status=$(awk 'toupper($1) ~ /^HTTP/ {print $2}' "$hdr_file" 2>/dev/null | tail -n1)
         if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
             usage_data="$response"
             echo "$response" > "$cache_file"
             cache_mtime=$now
+            rm -f "$retryafter_file" 2>/dev/null  # recovered — clear the cooldown
+        elif [ "$http_status" = "429" ]; then
+            # Record when we're allowed to try again. Retry-After is
+            # delta-seconds here; fall back to a conservative 5 min if it's
+            # missing or non-numeric.
+            retry_secs=$(grep -i '^retry-after:' "$hdr_file" 2>/dev/null | tr -d '\r' | awk '{print $2}' | tail -n1)
+            case "$retry_secs" in
+                ''|*[!0-9]*) retry_secs=300 ;;
+            esac
+            echo $(( now + retry_secs )) > "$retryafter_file"
         fi
+        rm -f "$hdr_file" 2>/dev/null
     fi
-    # Fall back to stale cache
-    if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
-        usage_data=$(cat "$cache_file" 2>/dev/null)
-    fi
+fi
+
+# Fall back to stale cache whenever we don't have fresh data — including
+# while backing off, so the bars keep showing the last known numbers (with
+# the stale warning below) instead of vanishing entirely.
+if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
+    usage_data=$(cat "$cache_file" 2>/dev/null)
 fi
 
 # Flag data that's stale well beyond the normal refresh cadence (fetches
 # have been failing) so the display can warn instead of silently showing
 # numbers the user could mistake for current — e.g. thinking they have
-# more budget left than they actually do.
+# more budget left than they actually do. Rather than report how old the
+# data is (not actionable), we report WHEN it can next update:
+#   - during a server-imposed 429 cooldown, the exact retry deadline;
+#   - otherwise, the next scheduled attempt (cache_max_age after the last).
+# The epoch is formatted to a clock time at render (format_clock_time).
 usage_stale=false
-stale_age_mins=0
+usage_next_epoch=""
 if [ -n "$usage_data" ] && [ -n "$cache_mtime" ]; then
     data_age=$(( now - cache_mtime ))
     if [ "$data_age" -ge $(( cache_max_age * 3 )) ]; then
         usage_stale=true
-        stale_age_mins=$(( data_age / 60 ))
+        if [ -f "$retryafter_file" ]; then
+            retry_deadline=$(cat "$retryafter_file" 2>/dev/null)
+            case "$retry_deadline" in
+                ''|*[!0-9]*) : ;;
+                *) [ "$retry_deadline" -gt "$now" ] && usage_next_epoch="$retry_deadline" ;;
+            esac
+        fi
+        if [ -z "$usage_next_epoch" ] && [ -f "$attempt_file" ]; then
+            attempt_mtime=$(stat -c %Y "$attempt_file" 2>/dev/null || stat -f %m "$attempt_file" 2>/dev/null)
+            next_attempt=$(( attempt_mtime + cache_max_age ))
+            [ "$next_attempt" -gt "$now" ] && usage_next_epoch="$next_attempt"
+        fi
     fi
 fi
 
@@ -574,6 +623,15 @@ format_reset_time() {
             date -d "@$epoch" +"%b %-d" 2>/dev/null
             ;;
     esac
+}
+
+# Format an epoch (seconds) as a local clock time like "5:53pm".
+# Same style as format_reset_time's "time" mode, but takes an epoch directly.
+format_clock_time() {
+    local epoch="$1"
+    [ -z "$epoch" ] && return
+    date -j -r "$epoch" +"%l:%M%p" 2>/dev/null | sed 's/^ //' | tr '[:upper:]' '[:lower:]' || \
+    date -d "@$epoch" +"%l:%M%P" 2>/dev/null | sed 's/^ //'
 }
 
 # Cap-ETA segment — predicted wall-clock 100% time for the 5h window.
@@ -696,7 +754,14 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     # Assemble line 2: bars row
     line2="${col1_bar}${sep}${col2_bar}"
     [ -n "$col3_bar" ] && line2+="${sep}${col3_bar}"
-    $usage_stale && line2+="${sep}${red}⚠ stale ${stale_age_mins}m${reset}"
+    if $usage_stale; then
+        next_update=$(format_clock_time "$usage_next_epoch")
+        if [ -n "$next_update" ]; then
+            line2+="${sep}${red}⚠ updates ~${next_update}${reset}"
+        else
+            line2+="${sep}${red}⚠ updates soon${reset}"
+        fi
+    fi
 
     # Assemble line 3: resets row
     line3="${col1_reset}${sep}${col2_reset}"
