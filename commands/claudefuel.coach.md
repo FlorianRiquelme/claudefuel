@@ -16,7 +16,7 @@ target_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 snapshot=$("$target_dir/statusline.sh" --snapshot)
 ```
 
-Validate `.schema == {"name": "claudefuel-snapshot", "version": 1}` — on mismatch, show the raw JSON and point at `/claudefuel.update` instead of guessing. If the usage cache is absent or stale (`.caches.usage`), say so and weaken every conclusion accordingly.
+Validate `.schema == {"name": "claudefuel-snapshot", "version": 2}` (version 1 from an older installed script is also fine — it just lacks the `config` block) — on a different name or a greater version, show the raw JSON and point at `/claudefuel.update` instead of guessing. If the usage cache is absent or stale (`.caches.usage`), say so and weaken every conclusion accordingly.
 
 ## Step 3 — Reason to a recommendation
 

@@ -29,6 +29,7 @@ Check these in order and report each result on its own line:
      | CLAUDEFUEL_OFFLINE=1 "$target_dir/statusline.sh"
    ```
    Expected: exit 0 and a line 2 containing `62%` and `31%` — proof the bars render from stdin alone, offline, regardless of cache state.
+9. **User config parses clean.** `"$target_dir/statusline.sh" --validate-config` — exit 0 with `status: "ok"` (no config file: exit 2 / `"absent"` — that is healthy too, it means pure defaults). Surface any `warnings` from the report verbatim; they name mistyped tokens and out-of-order thresholds with suggestions. Fixes belong to `/claudefuel.configure`, not this skill.
 
 Do **not** modify any files. If something is broken, tell the user which item failed and point them at `/claudefuel.update` (for version drift), `/claudefuel.rollback` (for a recent botched upgrade), or the install paste line (for missing artifacts).
 
@@ -81,61 +82,25 @@ While a usable cache exists the bar prefers rendering it with a staleness age ma
 
 ## Bulb check (demo render)
 
-When the user asks to see the alarm states ("bulb check", "demo the alarms"), exercise every display state from a canned snapshot — proving the alarms can light without waiting for a real emergency. This is non-destructive: it uses a throwaway profile directory and its own cache files.
+When the user asks to see the alarm states ("bulb check", "demo the alarms"), exercise every display state — proving the alarms can light without waiting for a real emergency. The script ships this as a first-class flag: each state renders from canned built-in data, deterministic, touching neither the network nor the user's real caches.
 
 ```bash
 target_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-demo_dir=$(mktemp -d)
-mkdir -p "$demo_dir/cache" /tmp/claude
-demo_hash=$(printf '%s' "$demo_dir" | shasum -a 256 | cut -c1-8)
-usage_cache="/tmp/claude/statusline-usage-cache-${demo_hash}.json"
-prepaid_cache="/tmp/claude/statusline-prepaid-cache-${demo_hash}.json"
-iso() { date -u -r "$1" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d "@$1" +"%Y-%m-%dT%H:%M:%SZ"; }
-now=$(date +%s)
-
-# Drift signal: cached upstream deliberately differs from installed.
-printf '{"upstream_version":"99.99.99"}\n' > "$demo_dir/cache/claudefuel-version.json"
-
-# Alarm snapshot: 5h 85% (yellow) burning hot 4h into the window with 1h
-# to reset (cap-ETA fires), 7d 55% (orange), prepaid balance present.
-printf '{"five_hour":{"utilization":85,"resets_at":"%s"},"seven_day":{"utilization":55,"resets_at":"%s"},"extra_usage":{"is_enabled":true}}\n' \
-  "$(iso $((now + 3600)))" "$(iso $((now + 432000)))" > "$usage_cache"
-printf '{"amount":2500,"currency":"USD"}\n' > "$prepaid_cache"
-
-# Backdate the usage cache 9 minutes — the temp profile has no
-# credentials, so the bar falls back to it and shows the ·9m age marker.
-ts=$(date -v-9M +%Y%m%d%H%M.%S 2>/dev/null || date -d '9 minutes ago' +%Y%m%d%H%M.%S)
-touch -t "$ts" "$usage_cache"
-
-echo "=== 1. alarm states ==="
-printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"},"session_id":"bulb","context_window":{"context_window_size":200000,"current_usage":{"input_tokens":190000}}}' \
-  | CLAUDE_CONFIG_DIR="$demo_dir" CLAUDEFUEL_OFFLINE=1 CLAUDE_CODE_OAUTH_TOKEN= "$target_dir/statusline.sh"
-echo
-
-echo "=== 2. nominal (all green) ==="
-printf '{"five_hour":{"utilization":5,"resets_at":"%s"},"seven_day":{"utilization":12,"resets_at":"%s"},"extra_usage":{"is_enabled":false}}\n' \
-  "$(iso $((now + 14400)))" "$(iso $((now + 432000)))" > "$usage_cache"
-printf '{"upstream_version":"%s"}\n' "$(head -20 "$target_dir/statusline.sh" | grep -E '^# claudefuel:' | sed -E 's/^# claudefuel: v//')" \
-  > "$demo_dir/cache/claudefuel-version.json"
-printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"},"session_id":"bulb","context_window":{"context_window_size":200000,"current_usage":{"input_tokens":40000}}}' \
-  | CLAUDE_CONFIG_DIR="$demo_dir" CLAUDEFUEL_OFFLINE=1 CLAUDE_CODE_OAUTH_TOKEN= "$target_dir/statusline.sh"
-echo
-
-echo "=== 3. failure trailhead (no data, no credentials) ==="
-rm -f "$usage_cache" "$prepaid_cache"
-printf '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"},"session_id":"bulb"}' \
-  | CLAUDE_CONFIG_DIR="$demo_dir" CLAUDE_CODE_OAUTH_TOKEN= "$target_dir/statusline.sh"
-echo
-
-rm -rf "$demo_dir" /tmp/claude/statusline-usage-cache-"${demo_hash}".json \
-  /tmp/claude/statusline-prepaid-cache-"${demo_hash}".json \
-  /tmp/claude/statusline-orguuid-cache-"${demo_hash}"
+for state in healthy warning critical stale offline; do
+  echo "=== $state ==="
+  "$target_dir/statusline.sh" --demo "$state"
+  echo
+done
 ```
 
 Walk the user through what lit up, checking each off:
 
-1. **Alarm render**: red `ctx` bar (95%), `↗ /claudefuel.update` drift signal on line 1; yellow 5h bar (85%) with the `·9m` staleness age marker, orange 7d bar (55%), `extra: $25.00` on line 2; `↻` reset times plus a `~cap HH:MM-HH:MM` range in the 5h cell on line 3.
-2. **Nominal render**: green bars all around, no drift signal, no cap-ETA, no markers.
-3. **Failure render**: `⊘ ✚ /claudefuel.doctor` trailhead in place of the usage rows.
+1. **healthy**: green bars, `extra: $25.00`, plain `↻` reset times — no alarms.
+2. **warning**: yellow 5h bar (72%), orange 7d bar (55%) — hot colors, no projection alarms.
+3. **critical**: red `ctx` bar (95%) on line 1; `▸⚠` prefix with inverse-video burn chip (`~18m ×1.2`) on the 5h cell; `~cap HH:MM-HH:MM · slow ≤N.N× · ⚓` on line 3.
+4. **stale**: `·9m` age markers on the 5h and extra cells plus the `⚠ updates ~HH:MM` warning.
+5. **offline**: `⚠ ✚ /claudefuel.doctor` trailhead in place of the usage rows.
 
-If any expected element is missing, report which bulb failed to light.
+If any expected element is missing, report which bulb failed to light. The `↗ /claudefuel.update` drift signal is deliberately absent from demo renders (they must be deterministic); its logic is covered by check 2 + the version cache.
+
+If `--demo` errors out (installed script predates it), fall back to rendering with a throwaway profile and seeded caches as older doctors did — or better, run `/claudefuel.update` first.

@@ -16,7 +16,7 @@ If the command fails or prints nothing, the installed `statusline.sh` predates t
 
 ## Step 2 — Validate the schema
 
-This skill understands `.schema == {"name": "claudefuel-snapshot", "version": 1}`. If `.schema.name` differs or `.schema.version` is greater than 1, do not guess at field meanings — show the raw JSON, say the skill and script versions are out of sync, and point at `/claudefuel.update`.
+This skill understands `.schema == {"name": "claudefuel-snapshot", "version": 2}`, and tolerates version 1 from an older installed script (the v2 `config` block is simply absent there). If `.schema.name` differs or `.schema.version` is greater than 2, do not guess at field meanings — show the raw JSON, say the skill and script versions are out of sync, and point at `/claudefuel.update`.
 
 ## Step 3 — Annotate, in this order
 
@@ -40,6 +40,7 @@ This skill understands `.schema == {"name": "claudefuel-snapshot", "version": 1}
 
    Conclude with `.derived.five_hour.cap_eta_rendered`: whether `~cap` is on the bar right now, and if not, which gate hid it.
 6. **The other windows.** `.usage.seven_day` and `.usage.extra_usage` / `.prepaid` (balance in cents, divide by 100 for display). Note that no cap-ETA exists for these by design — their burn rates are too inertial to be actionable at sub-day horizons (ADR-0004 scope).
+7. **Config (v2).** When `.config` is present and the question touches appearance or visibility ("why is my bar red at 75%?", "where did the thinking segment go?"), answer from it: `.config.effective` holds the merged values driving the render, `.config.overridden_keys` names exactly what the user's `claudefuel.json` changed (e.g. "your `color_thresholds.red` is set to 70 — the default is 90"), `.config.status` says whether the file parsed (`malformed` means defaults won). Point at `/claudefuel.configure` for changes; never edit the file from this skill.
 
 ## Honesty rules
 

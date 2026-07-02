@@ -345,3 +345,98 @@ run_bar_plain() {
 
   [ "$baseline" = "$configured" ]
 }
+
+# ===== CLAUDEFUEL_CONFIG override (the preview seam) =====
+
+@test "CLAUDEFUEL_CONFIG points the loader at an alternative config file" {
+  seed_usage_cache
+  write_config '{"version": 1, "segments": {"hide": ["thinking"]}}'
+  alt="$BATS_TEST_TMPDIR/alt.json"
+  printf '{"version": 1, "theme": "mono"}' > "$alt"
+
+  out=$(CLAUDEFUEL_CONFIG="$alt" run_bar)
+
+  # The override wins: mono palette, and the real file's hide is ignored.
+  [[ "$out" != *$'\x1b[38;2'* ]]
+  [[ "$(printf '%s' "$out" | strip_ansi)" == *"thinking"* ]]
+}
+
+@test "malformed CLAUDEFUEL_CONFIG override falls back to pure defaults" {
+  seed_usage_cache
+  baseline=$(run_bar)
+  alt="$BATS_TEST_TMPDIR/broken.json"
+  printf 'not json {' > "$alt"
+
+  out=$(CLAUDEFUEL_CONFIG="$alt" run_bar)
+
+  [ "$out" = "$baseline" ]
+}
+
+# ===== --validate-config =====
+
+validate() {
+  CLAUDEFUEL_CONFIG= "$STATUSLINE" --validate-config "$@"
+}
+
+@test "validate: valid sparse config reports ok with its overridden keys" {
+  write_config '{"version": 1, "color_thresholds": {"red": 95}, "reset_display": "countdown"}'
+  run validate "$CONFIG_FILE"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.schema')" = "claudefuel-config-check v1" ]
+  [ "$(printf '%s' "$output" | jq -r '.status')" = "ok" ]
+  [ "$(printf '%s' "$output" | jq -r '.effective.color_thresholds.red')" = "95" ]
+  printf '%s' "$output" | jq -e '.overridden_keys == ["color_thresholds.red","reset_display"]' >/dev/null
+}
+
+@test "validate: malformed JSON exits 1 with a parse error" {
+  write_config 'this is not json {'
+  run validate "$CONFIG_FILE"
+  [ "$status" -eq 1 ]
+  [ "$(printf '%s' "$output" | jq -r '.status')" = "malformed" ]
+  [ "$(printf '%s' "$output" | jq -r '.errors | length')" -ge 1 ]
+}
+
+@test "validate: absent file exits 2 with effective defaults" {
+  run validate "$BATS_TEST_TMPDIR/does-not-exist.json"
+  [ "$status" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -r '.status')" = "absent" ]
+  [ "$(printf '%s' "$output" | jq -r '.effective.color_thresholds.red')" = "90" ]
+}
+
+@test "validate: out-of-order thresholds warn but do not error" {
+  write_config '{"version": 1, "color_thresholds": {"orange": 80, "yellow": 60}}'
+  run validate "$CONFIG_FILE"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.status')" = "warnings" ]
+  printf '%s' "$output" | jq -e '.warnings | map(select(test("out of order"))) | length == 1' >/dev/null
+}
+
+@test "validate: unknown hide token warns with a nearest-match suggestion" {
+  write_config '{"version": 1, "segments": {"hide": ["7day"]}}'
+  run validate "$CONFIG_FILE"
+  [ "$status" -eq 0 ]
+  printf '%s' "$output" | jq -e '.warnings[0] | test("unknown token \"7day\"") and test("did you mean \"7d\"")' >/dev/null
+}
+
+@test "validate: unknown top-level key is info, not a warning" {
+  write_config '{"version": 1, "future_key": {"a": 1}}'
+  run validate "$CONFIG_FILE"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.status')" = "ok" ]
+  printf '%s' "$output" | jq -e '.info[0] | test("future_key")' >/dev/null
+}
+
+@test "validate: defaults agree with the render loader (single source of truth check)" {
+  # A config of explicit defaults must produce zero overridden semantics:
+  # the render with it is byte-identical to no config at all, and the
+  # validate report's effective block equals the absent-file effective.
+  seed_usage_cache
+  baseline=$(run_bar)
+  write_config '{"version":1,"theme":"default","color_thresholds":{"orange":50,"yellow":70,"red":90},"reset_display":"clock","segments":{"order":{"line1":["model","ctx","thinking","effort","drift"],"columns":["5h","7d","extra"]},"hide":[]}}'
+  configured=$(run_bar)
+  [ "$baseline" = "$configured" ]
+
+  eff_file=$(validate "$CONFIG_FILE" | jq -S '.effective')
+  eff_absent=$(validate "$BATS_TEST_TMPDIR/none.json" | jq -S '.effective' || true)
+  [ "$eff_file" = "$eff_absent" ]
+}

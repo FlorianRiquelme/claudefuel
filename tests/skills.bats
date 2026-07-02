@@ -71,3 +71,41 @@ SKILLS=(update doctor rollback uninstall configure why coach)
   run grep -F "Post-install summary" "$COMMANDS_DIR/claudefuel.update.md"
   [ "$status" -eq 0 ]
 }
+
+# ===== configure v2: the preview loop is the heart of the feature =====
+
+@test "configure skill is built around the preview loop" {
+  local f="$COMMANDS_DIR/claudefuel.configure.md"
+  grep -q -- '--demo healthy' "$f"
+  grep -q -- '--demo critical' "$f"
+  grep -q 'CLAUDEFUEL_CONFIG=' "$f"
+  grep -q -- '--validate-config' "$f"
+  grep -qi 'never write a config the user hasn.t seen rendered' "$f"
+  grep -q 'live on your next render' "$f"
+}
+
+@test "configure skill ships the intent vocabulary and presets" {
+  local f="$COMMANDS_DIR/claudefuel.configure.md"
+  grep -q 'preset `minimal`' "$f"
+  grep -q 'preset `focus`' "$f"
+  grep -q 'preset `cockpit`' "$f"
+  grep -qi 'calmer' "$f"
+  grep -qi 'colorblind' "$f"
+  grep -q 'no `preset` key' "$f"
+}
+
+@test "configure skill carries the write guardrails and undo" {
+  local f="$COMMANDS_DIR/claudefuel.configure.md"
+  grep -q 'claudefuel.json.bak-' "$f"
+  grep -qi 'undo' "$f"
+  grep -q 'Never `settings.json`' "$f"
+  grep -qi 'sparse' "$f"
+  grep -qi 'preserve unknown keys' "$f"
+  grep -qi 'degrade' "$f"
+}
+
+@test "configure skill keeps the LLM-context budget (~150 lines)" {
+  local lines
+  lines=$(wc -l < "$COMMANDS_DIR/claudefuel.configure.md")
+  [ "$lines" -le 150 ]
+}
