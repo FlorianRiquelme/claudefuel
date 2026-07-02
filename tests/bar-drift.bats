@@ -7,8 +7,10 @@
 # assert on stdout.
 #
 # We do NOT test the live curl path — that's exercised manually. The
-# load-bearing behavior here is "drift segment appears iff installed ≠
-# cached-upstream", which is fully observable through the cache.
+# load-bearing behavior here is "drift segment appears iff cached-upstream
+# is strictly newer than installed", which is fully observable through
+# the cache. Equal or installed-ahead-of-cache states must stay silent —
+# a fresh local update can outrun the 6h cache TTL.
 
 SAMPLE_STDIN='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"},"session_id":"t"}'
 
@@ -43,12 +45,22 @@ run_bar() {
   [[ "$line1" != *"/claudefuel.update"* ]]
 }
 
-@test "↗ /claudefuel.update appears on line 1 when cached upstream differs" {
+@test "↗ /claudefuel.update appears on line 1 when cached upstream is newer" {
   seed_cache "9.9.9"
   output=$(run_bar)
   line1=$(printf '%s' "$output" | head -n1)
   [[ "$line1" == *"↗"* ]]
   [[ "$line1" == *"/claudefuel.update"* ]]
+}
+
+@test "no ↗ segment when installed is newer than cached upstream" {
+  # Post-release window: the local install was just updated but the cache
+  # still holds the previous upstream version (6h TTL, or a lagging CDN).
+  seed_cache "0.0.1"
+  output=$(run_bar)
+  line1=$(printf '%s' "$output" | head -n1)
+  [[ "$line1" != *"↗"* ]]
+  [[ "$line1" != *"/claudefuel.update"* ]]
 }
 
 @test "drift segment does not grow bar height (still ≤3 lines)" {
