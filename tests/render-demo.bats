@@ -157,3 +157,8 @@ demo() {
   [ "$status" -eq 2 ]
   [[ "$output" == *"usage:"* ]]
 }
+
+@test "demo renders never emit OSC 8, regardless of the host terminal" {
+  out=$(TZ=UTC TERM_PROGRAM=iTerm.app "$STATUSLINE" --demo critical)
+  [[ "$out" != *']8;;'* ]]
+}

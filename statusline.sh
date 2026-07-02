@@ -608,6 +608,10 @@ if [ "${1:-}" = "--demo" ]; then
     esac
     CLAUDEFUEL_NOW=$demo_now
     CLAUDEFUEL_OFFLINE=1
+    # Demo output is captured as text by the configure skill's preview
+    # loop — OSC 8 sequences would read as garbage there, and byte-
+    # stable goldens must not depend on the host terminal.
+    FORCE_HYPERLINK=0
     case "$demo_state" in
         healthy)
             # 5h 30% with 2.5h elapsed (ratio 0.6 — nominal), 7d 12%.
