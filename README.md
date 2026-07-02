@@ -71,7 +71,37 @@ Once installed, five slash commands are available in any Claude Code session:
 | `/claudefuel.doctor` | Non-destructive health check across the install — file presence, version header, `settings.json` wiring, dependencies. Includes a timing mode (`CLAUDEFUEL_TIMING=1`) that checks per-stage render latency against the published budget, explains the bar's failure glyphs (`⊘` / `⚠` / `?`), and can run a bulb-check demo render that lights up every alarm state from a canned snapshot. |
 | `/claudefuel.rollback` | Restore the most recent `*.bak-<timestamp>` written by a previous install. Shows the diff and asks before restoring. |
 | `/claudefuel.uninstall` | Remove the install bundle cleanly. Asks separately about backups and your `claudefuel.json`. |
-| `/claudefuel.configure` | **Placeholder** — the name is reserved as part of the stability contract but config keys (color thresholds, segment ordering, theme presets) aren't wired into the bar yet. |
+| `/claudefuel.configure` | Edit `~/.claude/claudefuel.json` conversationally — color thresholds, segment ordering, segment show/hide, theme presets. See [Configuration](#configuration). |
+
+## Configuration
+
+The bar reads `~/.claude/claudefuel.json` (or `$CLAUDE_CONFIG_DIR/claudefuel.json` for a profile) on every render and merges it over baked-in defaults. No file means pure defaults; a malformed file is ignored — the bar never breaks over config. The file is user-owned: install, upgrade, and uninstall never touch it.
+
+Run `/claudefuel.configure` to edit it conversationally, or write it by hand. All keys are optional:
+
+```json
+{
+  "version": 1,
+  "theme": "default",
+  "color_thresholds": { "orange": 50, "yellow": 70, "red": 90 },
+  "reset_display": "clock",
+  "segments": {
+    "order": {
+      "line1": ["model", "ctx", "thinking", "effort", "drift"],
+      "columns": ["5h", "7d", "extra"]
+    },
+    "hide": []
+  }
+}
+```
+
+- **`theme`** — `"default"` (truecolor) or `"mono"` (no hues).
+- **`color_thresholds`** — utilization % at which bars turn orange / yellow / red (below orange: green). One ladder, shared by the ctx, 5h, and 7d bars.
+- **`reset_display`** — `"clock"` (`↻ 5:30pm`) or `"countdown"` (`↻ in 42m`) on line 3.
+- **`segments.order`** — `line1` orders the line-1 segments; `columns` orders the 5h/7d/extra columns on lines 2 and 3 together (line 3 always mirrors line 2).
+- **`segments.hide`** — tokens to hide: any order token above, plus the hide-only badges `"profile"` (the `[name]` prefix) and `"cap_eta"` (the `~cap` range on the 5h reset cell).
+
+Scope is deliberately minor tweaks only — color thresholds, segment ordering, segment show/hide, theme presets. Custom segments, user data sources, and embedded scripts are out of scope by design.
 
 ## Why a paste-line, not a plugin?
 
@@ -196,8 +226,8 @@ Check `echo $CLAUDE_CONFIG_DIR` in the terminal where the bar is wrong. claudefu
 **I edited `statusline.sh` and now `/claudefuel.update` refuses with "installed is newer than spec."**
 The version-comparison guard is intentionally strict — local edits to the version header are treated as a pre-release build, not a candidate for forward upgrade. To resume tracking releases, edit the `# claudefuel: vX.Y.Z` header in your local copy to match the spec version, then re-run `/claudefuel.update`.
 
-**`/claudefuel.configure` doesn't actually configure anything.**
-Correct — the name is reserved as part of the stability contract but config keys aren't wired into the bar yet.
+**I edited `claudefuel.json` and nothing changed.**
+Check it parses: `jq . ~/.claude/claudefuel.json`. A malformed file is silently ignored (the bar falls back to defaults rather than breaking). Also check the terminal's `$CLAUDE_CONFIG_DIR` — when a profile is active, the bar reads `$CLAUDE_CONFIG_DIR/claudefuel.json` instead.
 
 **The bar feels slow, or I'm working offline.**
 Once a cache exists the render never waits on the network — if it still feels slow, run `/claudefuel.doctor` and ask for timing mode to check the per-stage latency against the published budget. On a flaky or absent network, set `CLAUDEFUEL_OFFLINE=1` to skip every fetch; the bar keeps painting the last cached values.

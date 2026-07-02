@@ -13,6 +13,9 @@
 # Supports CLAUDE_CONFIG_DIR for per-account usage display.
 # When CLAUDE_CONFIG_DIR is set, keychain lookups and cache files are isolated per account.
 #
+# User config: ~/.claude/claudefuel.json (or $CLAUDE_CONFIG_DIR/claudefuel.json),
+# edited via /claudefuel.configure. Minor tweaks only — see ADR-0003.
+#
 # Cross-platform: macOS (Keychain), Linux (credentials file, GNOME Keyring)
 # Dependencies: jq, curl
 
@@ -65,6 +68,69 @@ white='\033[38;2;220;220;220m'
 dim='\033[2m'
 reset='\033[0m'
 
+# ===== Config: ~/.claude/claudefuel.json over baked-in defaults =====
+# User-owned, never written by install/update (ADR-0003). Scope is minor
+# tweaks only: color thresholds, segment ordering, segment show/hide,
+# theme presets. Absent file = pure defaults (the common path: no jq
+# call). Malformed file = pure defaults (the bar must never break over
+# config). A single jq pass emits shell assignments; strings are
+# @sh-quoted and numbers forced through tonumber, so eval never sees an
+# unquoted user value; segment tokens are additionally whitelisted at
+# render time. Schema carries "version": 1 for future migration.
+cfg_version=1
+cfg_theme="default"
+cfg_th_orange=50
+cfg_th_yellow=70
+cfg_th_red=90
+cfg_reset_display="clock"
+cfg_line1_order="model ctx thinking effort drift"
+cfg_columns_order="5h 7d extra"
+cfg_hide=""
+
+config_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claudefuel.json"
+if [ -f "$config_file" ]; then
+    cfg_assignments=$(jq -r '
+        def num(v; d): ((v | tonumber? // d) | floor | tostring);
+        def toks(v; d): ((v // d) | if type == "array" then map(tostring) | join(" ") else d | join(" ") end | @sh);
+        "cfg_version=" + num((.version)?; 1),
+        "cfg_theme=" + (((.theme)? // "default") | tostring | @sh),
+        "cfg_th_orange=" + num((.color_thresholds.orange)?; 50),
+        "cfg_th_yellow=" + num((.color_thresholds.yellow)?; 70),
+        "cfg_th_red=" + num((.color_thresholds.red)?; 90),
+        "cfg_reset_display=" + (((.reset_display)? // "clock") | tostring | @sh),
+        "cfg_line1_order=" + toks((.segments.order.line1)?; ["model","ctx","thinking","effort","drift"]),
+        "cfg_columns_order=" + toks((.segments.order.columns)?; ["5h","7d","extra"]),
+        "cfg_hide=" + toks((.segments.hide)?; [])
+    ' "$config_file" 2>/dev/null) && eval "$cfg_assignments"
+fi
+
+# Theme presets remap the palette before anything renders.
+# "default" keeps the truecolor palette; "mono" drops hue entirely
+# (structure still reads via dim/reset).
+case "$cfg_theme" in
+    mono) blue="" orange="" green="" cyan="" red="" yellow="" white="" ;;
+esac
+
+# Usage: segment_hidden <token> — true when token is in segments.hide.
+segment_hidden() {
+    case " $cfg_hide " in
+        *" $1 "*) return 0 ;;
+    esac
+    return 1
+}
+
+# Shared severity ladder: utilization pct → color. Every colored bar
+# resolves severity through this one function so configured thresholds
+# apply uniformly.
+severity_color() {
+    local pct=$1
+    if [ "$pct" -ge "$cfg_th_red" ]; then printf '%s' "$red"
+    elif [ "$pct" -ge "$cfg_th_yellow" ]; then printf '%s' "$yellow"
+    elif [ "$pct" -ge "$cfg_th_orange" ]; then printf '%s' "$orange"
+    else printf '%s' "$green"
+    fi
+}
+
 # Format token counts (e.g., 50k / 200k)
 format_tokens() {
     local num=$1
@@ -88,13 +154,9 @@ build_bar() {
     local filled=$(( pct * width / 100 ))
     local empty=$(( width - filled ))
 
-    # Color based on usage level
+    # Color based on usage level (shared severity ladder, config-driven)
     local bar_color
-    if [ "$pct" -ge 90 ]; then bar_color="$red"
-    elif [ "$pct" -ge 70 ]; then bar_color="$yellow"
-    elif [ "$pct" -ge 50 ]; then bar_color="$orange"
-    else bar_color="$green"
-    fi
+    bar_color=$(severity_color "$pct")
 
     local filled_str="" empty_str=""
     for ((i=0; i<filled; i++)); do filled_str+="●"; done
@@ -135,30 +197,6 @@ thinking_val=$(echo "$input" | jq -r '.thinking.enabled // false')
 effort_level=$(echo "$input" | jq -r '.effort.level // empty')
 
 cf_timing_mark jq-parse
-
-# ===== LINE 1: [profile] Model | ctx <bar> <used>/<total> | thinking | effort =====
-# Show active profile name when using CLAUDE_CONFIG_DIR (e.g. "work", "personal")
-profile_label=""
-if [ -n "$CLAUDE_CONFIG_DIR" ]; then
-    profile_name=$(basename "$CLAUDE_CONFIG_DIR" | sed 's/^\.claude-//')
-    profile_label="${yellow}[${profile_name}]${reset} "
-fi
-
-ctx_bar=$(build_bar "$pct_used" 10)
-line1=""
-line1+="${profile_label}${blue}${model_name}${reset}"
-line1+=" ${dim}|${reset} "
-line1+="${white}ctx${reset} ${ctx_bar} ${orange}${used_tokens}/${total_tokens}${reset}"
-line1+=" ${dim}|${reset} "
-line1+="thinking: "
-if $thinking_on; then
-    line1+="${orange}On${reset}"
-else
-    line1+="${dim}Off${reset}"
-fi
-if [ -n "$effort_level" ]; then
-    line1+=" ${dim}|${reset} effort: ${cyan}${effort_level}${reset}"
-fi
 
 # Fetch the upstream version header and atomically publish it to the drift
 # cache (tmpfile+mv, so a concurrent render never reads a half-written
@@ -240,10 +278,61 @@ claudefuel_drift_segment() {
     printf "↗ /claudefuel.update"
 }
 
-drift_segment=$(claudefuel_drift_segment)
-if [ -n "$drift_segment" ]; then
-    line1+=" ${dim}|${reset} ${yellow}${drift_segment}${reset}"
-fi
+# ===== LINE 1: [profile] Model | ctx <bar> <used>/<total> | thinking | effort | drift =====
+# Segment registry: each segment is a function that echoes its rendered
+# content (or nothing). The renderer walks cfg_line1_order, skipping
+# hidden and empty segments, joining with the shared separator — so
+# show/hide and ordering are pure data (ADR-0003).
+sep=" ${dim}|${reset} "
+
+# The profile badge ("[work] " when CLAUDE_CONFIG_DIR is set) is
+# attached to the model segment: hide-only via "profile", not
+# independently orderable.
+segment_model() {
+    local profile_label=""
+    if [ -n "$CLAUDE_CONFIG_DIR" ] && ! segment_hidden profile; then
+        local profile_name
+        profile_name=$(basename "$CLAUDE_CONFIG_DIR" | sed 's/^\.claude-//')
+        profile_label="${yellow}[${profile_name}]${reset} "
+    fi
+    printf '%s' "${profile_label}${blue}${model_name}${reset}"
+}
+
+segment_ctx() {
+    local ctx_bar
+    ctx_bar=$(build_bar "$pct_used" 10)
+    printf '%s' "${white}ctx${reset} ${ctx_bar} ${orange}${used_tokens}/${total_tokens}${reset}"
+}
+
+segment_thinking() {
+    if $thinking_on; then
+        printf '%s' "thinking: ${orange}On${reset}"
+    else
+        printf '%s' "thinking: ${dim}Off${reset}"
+    fi
+}
+
+segment_effort() {
+    [ -n "$effort_level" ] || return 0
+    printf '%s' "effort: ${cyan}${effort_level}${reset}"
+}
+
+segment_drift() {
+    local drift_segment
+    drift_segment=$(claudefuel_drift_segment)
+    [ -n "$drift_segment" ] || return 0
+    printf '%s' "${yellow}${drift_segment}${reset}"
+}
+
+line1=""
+for seg in $cfg_line1_order; do
+    case "$seg" in model|ctx|thinking|effort|drift) ;; *) continue ;; esac
+    segment_hidden "$seg" && continue
+    seg_out=$("segment_${seg}")
+    [ -z "$seg_out" ] && continue
+    [ -n "$line1" ] && line1+="$sep"
+    line1+="$seg_out"
+done
 
 cf_timing_mark drift
 
@@ -748,6 +837,24 @@ format_clock_time() {
     date -d "@$epoch" +"%l:%M%P" 2>/dev/null | sed 's/^ //'
 }
 
+# Format an epoch as a compact countdown to it (e.g. "in 42m",
+# "in 2h05m", "in 4d21h"). Used in place of format_reset_time when
+# reset_display=countdown is configured.
+format_countdown() {
+    local epoch=$1
+    [ -z "$epoch" ] && return
+    local diff=$(( epoch - $(date +%s) ))
+    [ "$diff" -lt 0 ] && diff=0
+    local d=$(( diff / 86400 )) h=$(( diff % 86400 / 3600 )) m=$(( diff % 3600 / 60 ))
+    if [ "$d" -gt 0 ]; then
+        printf "in %dd%02dh" "$d" "$h"
+    elif [ "$h" -gt 0 ]; then
+        printf "in %dh%02dm" "$h" "$m"
+    else
+        printf "in %dm" "$m"
+    fi
+}
+
 # Cap-ETA segment — predicted wall-clock 100% time for the 5h window.
 # Stateless: computed from a single snapshot (pct + reset epoch), no
 # samples persisted across renders. Renders only when burn rate exceeds
@@ -808,91 +915,134 @@ pad_column() {
     fi
 }
 
+# ===== LINE 2/3 column registry =====
+# 5h / 7d / extra are columns: each owns a Line 2 cell (bar) and a
+# Line 3 cell (reset). A column function sets col_bar / col_reset for
+# the renderer, which walks cfg_columns_order so show/hide and ordering
+# are pure data — Line 3 always mirrors Line 2's column order.
+
+# ---- 5-hour ----
+column_5h() {
+    local five_hour_pct five_hour_reset_iso five_hour_reset five_hour_bar
+    five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
+    five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
+    local five_hour_reset_epoch
+    five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
+    if [ "$cfg_reset_display" = "countdown" ]; then
+        five_hour_reset=$(format_countdown "$five_hour_reset_epoch")
+    else
+        five_hour_reset=$(format_reset_time "$five_hour_reset_iso" "time")
+    fi
+    five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
+
+    # Calculate visible length: "5h: " + bar + " " + "XX%"
+    local col1_bar_vis_len=$(( 4 + bar_width + 1 + ${#five_hour_pct} + 1 ))
+    local col1_bar_raw="${white}5h:${reset} ${five_hour_bar} ${cyan}${five_hour_pct}%${reset}"
+
+    # Staleness age marker — one snapshot drives lines 2–3, so one marker
+    # on the leading (5h) cell: `·9m` = this data is 9 minutes old.
+    if [ -n "$usage_stale_age" ]; then
+        local stale_age_str
+        stale_age_str=$(format_cache_age "$usage_stale_age")
+        col1_bar_raw+=" ${dim}·${stale_age_str}${reset}"
+        col1_bar_vis_len=$(( col1_bar_vis_len + 2 + ${#stale_age_str} ))
+    fi
+    # col_bar padding deferred — see col1w_actual computation below (cap-ETA may widen col1).
+
+    local col1_reset_plain="↻ ${five_hour_reset}"
+    col_reset="${white}↻ ${five_hour_reset}${reset}"
+
+    # Cap-ETA: see ADR-0004. Append to the 5h reset cell when present.
+    local cap_eta_plain=""
+    if ! segment_hidden cap_eta; then
+        cap_eta_plain=$(claudefuel_cap_eta_segment "$five_hour_pct" "$five_hour_reset_epoch")
+    fi
+    if [ -n "$cap_eta_plain" ]; then
+        col1_reset_plain+=" · ${cap_eta_plain}"
+        col_reset+=" ${dim}· ${cap_eta_plain}${reset}"
+    fi
+
+    # Widen col1 when cap-ETA grows the reset cell — keeps Line 2/3 pipes aligned.
+    local col1w_actual=$col1w
+    [ "${#col1_reset_plain}" -gt "$col1w_actual" ] && col1w_actual="${#col1_reset_plain}"
+    col_bar=$(pad_column "$col1_bar_raw" "$col1_bar_vis_len" "$col1w_actual")
+    col_reset=$(pad_column "$col_reset" "${#col1_reset_plain}" "$col1w_actual")
+}
+
+# ---- 7-day ----
+column_7d() {
+    local seven_day_pct seven_day_reset_iso seven_day_reset seven_day_bar
+    seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
+    seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
+    if [ "$cfg_reset_display" = "countdown" ]; then
+        seven_day_reset=$(format_countdown "$(iso_to_epoch "$seven_day_reset_iso")")
+    else
+        seven_day_reset=$(format_reset_time "$seven_day_reset_iso" "datetime")
+    fi
+    seven_day_bar=$(build_bar "$seven_day_pct" "$bar_width")
+
+    local col2_bar_vis_len=$(( 4 + bar_width + 1 + ${#seven_day_pct} + 1 ))
+    col_bar="${white}7d:${reset} ${seven_day_bar} ${cyan}${seven_day_pct}%${reset}"
+    col_bar=$(pad_column "$col_bar" "$col2_bar_vis_len" "$col2w")
+
+    local col2_reset_plain="↻ ${seven_day_reset}"
+    col_reset="${white}↻ ${seven_day_reset}${reset}"
+    col_reset=$(pad_column "$col_reset" "${#col2_reset_plain}" "$col2w")
+}
+
+# ---- Extra usage (prepaid credit balance) ----
+column_extra() {
+    local extra_enabled prepaid_raw_amount
+    extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')
+    prepaid_raw_amount=$(echo "$prepaid_data" | jq -r '.amount // 0')
+    [ "$extra_enabled" = "true" ] && [ -n "$prepaid_data" ] \
+        && awk -v n="$prepaid_raw_amount" 'BEGIN { exit !(n != 0) }' || return 0
+
+    local prepaid_amount prepaid_currency sym
+    prepaid_amount=$(echo "$prepaid_raw_amount" | awk '{printf "%.2f", $1/100}')
+    prepaid_currency=$(echo "$prepaid_data" | jq -r '.currency // "USD"')
+    case "$prepaid_currency" in
+        EUR) sym="€" ;;
+        GBP) sym="£" ;;
+        JPY) sym="¥" ;;
+        *)   sym="\$" ;;
+    esac
+
+    col_bar="${white}extra:${reset} ${cyan}${sym}${prepaid_amount}${reset}"
+
+    # Staleness age marker for the prepaid cell (separate cache, own age).
+    if [ -n "$prepaid_stale_age" ]; then
+        col_bar+=" ${dim}·$(format_cache_age "$prepaid_stale_age")${reset}"
+    fi
+}
+
 line2=""
 line3=""
-sep=" ${dim}|${reset} "
 
 if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     bar_width=10
     col1w=19
     col2w=19
 
-    # ---- 5-hour ----
-    five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
-    five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
-    five_hour_reset=$(format_reset_time "$five_hour_reset_iso" "time")
-    five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
-
-    # Calculate visible length: "5h: " + bar + " " + "XX%"
-    col1_bar_vis_len=$(( 4 + bar_width + 1 + ${#five_hour_pct} + 1 ))
-    col1_bar_raw="${white}5h:${reset} ${five_hour_bar} ${cyan}${five_hour_pct}%${reset}"
-
-    # Staleness age marker — one snapshot drives lines 2–3, so one marker
-    # on the leading (5h) cell: `·9m` = this data is 9 minutes old.
-    if [ -n "$usage_stale_age" ]; then
-        stale_age_str=$(format_cache_age "$usage_stale_age")
-        col1_bar_raw+=" ${dim}·${stale_age_str}${reset}"
-        col1_bar_vis_len=$(( col1_bar_vis_len + 2 + ${#stale_age_str} ))
-    fi
-    # col1_bar padding deferred — see col1w_actual computation below (cap-ETA may widen col1).
-
-    col1_reset_plain="↻ ${five_hour_reset}"
-    col1_reset="${white}↻ ${five_hour_reset}${reset}"
-
-    # Cap-ETA: see ADR-0004. Append to the 5h reset cell when present.
-    five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
-    cap_eta_plain=$(claudefuel_cap_eta_segment "$five_hour_pct" "$five_hour_reset_epoch")
-    if [ -n "$cap_eta_plain" ]; then
-        col1_reset_plain+=" · ${cap_eta_plain}"
-        col1_reset+=" ${dim}· ${cap_eta_plain}${reset}"
-    fi
-
-    # Widen col1 when cap-ETA grows the reset cell — keeps Line 2/3 pipes aligned.
-    col1w_actual=$col1w
-    [ "${#col1_reset_plain}" -gt "$col1w_actual" ] && col1w_actual="${#col1_reset_plain}"
-    col1_bar=$(pad_column "$col1_bar_raw" "$col1_bar_vis_len" "$col1w_actual")
-    col1_reset=$(pad_column "$col1_reset" "${#col1_reset_plain}" "$col1w_actual")
-
-    # ---- 7-day ----
-    seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
-    seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
-    seven_day_reset=$(format_reset_time "$seven_day_reset_iso" "datetime")
-    seven_day_bar=$(build_bar "$seven_day_pct" "$bar_width")
-
-    col2_bar_vis_len=$(( 4 + bar_width + 1 + ${#seven_day_pct} + 1 ))
-    col2_bar="${white}7d:${reset} ${seven_day_bar} ${cyan}${seven_day_pct}%${reset}"
-    col2_bar=$(pad_column "$col2_bar" "$col2_bar_vis_len" "$col2w")
-
-    col2_reset_plain="↻ ${seven_day_reset}"
-    col2_reset="${white}↻ ${seven_day_reset}${reset}"
-    col2_reset=$(pad_column "$col2_reset" "${#col2_reset_plain}" "$col2w")
-
-    # ---- Extra usage (prepaid credit balance) ----
-    col3_bar=""
-    col3_reset=""
-    extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')
-    prepaid_raw_amount=$(echo "$prepaid_data" | jq -r '.amount // 0')
-    if [ "$extra_enabled" = "true" ] && [ -n "$prepaid_data" ] && awk -v n="$prepaid_raw_amount" 'BEGIN { exit !(n != 0) }'; then
-        prepaid_amount=$(echo "$prepaid_raw_amount" | awk '{printf "%.2f", $1/100}')
-        prepaid_currency=$(echo "$prepaid_data" | jq -r '.currency // "USD"')
-        case "$prepaid_currency" in
-            EUR) sym="€" ;;
-            GBP) sym="£" ;;
-            JPY) sym="¥" ;;
-            *)   sym="\$" ;;
-        esac
-
-        col3_bar="${white}extra:${reset} ${cyan}${sym}${prepaid_amount}${reset}"
-
-        # Staleness age marker for the prepaid cell (separate cache, own age).
-        if [ -n "$prepaid_stale_age" ]; then
-            col3_bar+=" ${dim}·$(format_cache_age "$prepaid_stale_age")${reset}"
+    for col in $cfg_columns_order; do
+        case "$col" in 5h|7d|extra) ;; *) continue ;; esac
+        segment_hidden "$col" && continue
+        col_bar=""
+        col_reset=""
+        "column_${col}"
+        if [ -n "$col_bar" ]; then
+            [ -n "$line2" ] && line2+="$sep"
+            line2+="$col_bar"
         fi
-    fi
+        if [ -n "$col_reset" ]; then
+            [ -n "$line3" ] && line3+="$sep"
+            line3+="$col_reset"
+        fi
+    done
 
-    # Assemble line 2: bars row
-    line2="${col1_bar}${sep}${col2_bar}"
-    [ -n "$col3_bar" ] && line2+="${sep}${col3_bar}"
+    # Severe staleness (fetches have been failing well beyond the normal
+    # cadence): append a prominent warning telling the user WHEN usage can
+    # next update, on top of the per-column age markers above.
     if $usage_stale; then
         next_update=$(format_clock_time "$usage_next_epoch")
         if [ -n "$next_update" ]; then
@@ -901,10 +1051,6 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
             line2+="${sep}${red}⚠ updates soon${reset}"
         fi
     fi
-
-    # Assemble line 3: resets row
-    line3="${col1_reset}${sep}${col2_reset}"
-    [ -n "$col3_reset" ] && line3+="${sep}${col3_reset}"
 elif [ -n "$usage_failure" ]; then
     # Failed gauge reads FAILED: no data to show and a known failure class.
     # One-glyph diagnosis + trailhead, mirroring the ↗ drift segment:
