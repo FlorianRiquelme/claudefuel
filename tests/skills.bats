@@ -37,6 +37,20 @@ SKILLS=(update doctor rollback uninstall configure)
   done
 }
 
+# /claudefuel.fleet is new and not yet part of the five-skill stability
+# contract — expanding that contract is an open ADR-level question (see
+# the cross-profile headroom commit). Until settled, its file format is
+# tested separately rather than folded into SKILLS above.
+@test "claudefuel.fleet.md exists with parseable header and frontmatter description" {
+  local file="$COMMANDS_DIR/claudefuel.fleet.md"
+  [ -f "$file" ]
+  local header
+  header=$(head -20 "$file" | grep -E '^# claudefuel-skill: v' | head -n1)
+  [[ "$header" =~ ^\#\ claudefuel-skill:\ v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+  run head -5 "$file"
+  [[ "$output" == *"description:"* ]]
+}
+
 @test "claudefuel.update.md references INSTALL.md's Post-install summary" {
   # The upgrade skill defers to INSTALL.md's "Post-install summary" section
   # rather than duplicating discoverability prose. If this reference is
