@@ -30,6 +30,7 @@ Or `/claudefuel.uninstall` from inside a Claude Code session.
 - Cross-platform: macOS Keychain, Linux credentials file / GNOME Keyring
 - Color-coded: green → orange → yellow → red as you burn through limits
 - **Never-block render:** the bar always paints instantly from its cache — a stale cache still paints while a detached one-shot background fetch refreshes it for the next render. Only the very first render after install waits on the network. Set `CLAUDEFUEL_OFFLINE=1` to skip all fetches entirely (the cached values keep painting).
+- **Honest gauge:** stale data never poses as fresh — cached snapshots render with an age marker (`5h: ●●●●●●○○○○ 62% ·9m` = 9 minutes old). When there's no data to show at all, a one-glyph diagnosis plus a `✚ /claudefuel.doctor` trailhead replaces the usage rows (`⊘` credentials, `⚠` network, `?` missing dependency). The bar reads credentials read-only and never refreshes tokens itself — Claude Code handles that on its own schedule.
 
 ## Works with multiple Claude Code accounts
 
@@ -67,7 +68,7 @@ Once installed, five slash commands are available in any Claude Code session:
 | Command | What it does |
 |---|---|
 | `/claudefuel.update` | Reconcile to the latest released spec. Pinned to the tag, shows the full diff before writing anything. Run it when you see the `↗ /claudefuel.update` drift signal on line 1. |
-| `/claudefuel.doctor` | Non-destructive health check across the install — file presence, version header, `settings.json` wiring, dependencies. Includes a timing mode (`CLAUDEFUEL_TIMING=1`) that checks per-stage render latency against the published budget. |
+| `/claudefuel.doctor` | Non-destructive health check across the install — file presence, version header, `settings.json` wiring, dependencies. Includes a timing mode (`CLAUDEFUEL_TIMING=1`) that checks per-stage render latency against the published budget, explains the bar's failure glyphs (`⊘` / `⚠` / `?`), and can run a bulb-check demo render that lights up every alarm state from a canned snapshot. |
 | `/claudefuel.rollback` | Restore the most recent `*.bak-<timestamp>` written by a previous install. Shows the diff and asks before restoring. |
 | `/claudefuel.uninstall` | Remove the install bundle cleanly. Asks separately about backups and your `claudefuel.json`. |
 | `/claudefuel.configure` | **Placeholder** — the name is reserved as part of the stability contract but config keys (color thresholds, segment ordering, theme presets) aren't wired into the bar yet. |
