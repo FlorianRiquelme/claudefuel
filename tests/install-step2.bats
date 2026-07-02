@@ -10,6 +10,7 @@
 # These tests guard against regression back to the `>= 0.1.0` floor bug.
 
 setup() {
+  export FORCE_HYPERLINK=0  # hermetic: the host terminal must not toggle OSC 8
   source "${BATS_TEST_DIRNAME}/fixtures/compare_versions.sh"
   INSTALL_MD="${BATS_TEST_DIRNAME}/../INSTALL.md"
 }

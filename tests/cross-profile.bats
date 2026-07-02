@@ -21,6 +21,7 @@
 SAMPLE_STDIN='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"},"session_id":"t"}'
 
 setup() {
+  export FORCE_HYPERLINK=0  # hermetic: the host terminal must not toggle OSC 8
   # Fake HOME so sibling discovery sees only what this test seeds —
   # and never the real machine's ~/.claude-* profiles.
   FAKE_HOME=$(mktemp -d)

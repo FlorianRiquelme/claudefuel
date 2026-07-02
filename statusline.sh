@@ -226,9 +226,9 @@ claudefuel_config_report() {
     local defaults='{
         "version": 1, "theme": "default",
         "color_thresholds": {"orange": 50, "yellow": 70, "red": 90},
-        "reset_display": "clock", "glyphs": "unicode",
+        "reset_display": "clock", "glyphs": "unicode", "hyperlinks": true,
         "segments": {
-          "order": {"line1": ["model","session","ctx","thinking","effort","agent","activity","drift"],
+          "order": {"line1": ["model","session","ctx","thinking","effort","agent","activity","pr","drift"],
                     "columns": ["5h","7d","extra"]},
           "hide": []
         }
@@ -248,10 +248,10 @@ claudefuel_config_report() {
         return
     fi
     jq --argjson d "$defaults" '
-        def line1_tokens: ["model","session","ctx","thinking","effort","agent","activity","drift"];
+        def line1_tokens: ["model","session","ctx","thinking","effort","agent","activity","pr","drift"];
         def column_tokens: ["5h","7d","extra"];
         def hide_tokens: line1_tokens + column_tokens + ["profile","cap_eta","projection","sessions"];
-        def known_keys: ["version","theme","color_thresholds","reset_display","glyphs","segments"];
+        def known_keys: ["version","theme","color_thresholds","reset_display","glyphs","hyperlinks","segments"];
 
         # Nearest-match hint for a mistyped token, prefix-based ("7day" →
         # "7d", "profil" → "profile"); falls back to listing valid tokens.
@@ -272,6 +272,7 @@ claudefuel_config_report() {
             },
             reset_display: ((($cfg.reset_display)? // "clock") | tostring),
             glyphs: ((($cfg.glyphs)? // "unicode") | tostring),
+            hyperlinks: (if ($cfg | has("hyperlinks")) then $cfg.hyperlinks else true end),
             segments: {
               order: {
                 line1: ((($cfg.segments.order.line1)? // $d.segments.order.line1)
@@ -284,7 +285,7 @@ claudefuel_config_report() {
             }
           } as $eff
         | ([ ["theme"], ["color_thresholds","orange"], ["color_thresholds","yellow"],
-             ["color_thresholds","red"], ["reset_display"], ["glyphs"],
+             ["color_thresholds","red"], ["reset_display"], ["glyphs"], ["hyperlinks"],
              ["segments","order","line1"], ["segments","order","columns"],
              ["segments","hide"] ]
            | map(select(. as $p | (($cfg | getpath($p))? // null) != null) | join("."))
@@ -311,6 +312,8 @@ claudefuel_config_report() {
                then ["unknown reset_display \"\($eff.reset_display)\" — clock used"] else [] end)
             + (if ["unicode","ascii"] | index($eff.glyphs) | not
                then ["unknown glyphs \"\($eff.glyphs)\" — unicode used"] else [] end)
+            + (if ($eff.hyperlinks | type) != "boolean"
+               then ["hyperlinks is not true|false — anything but true disables"] else [] end)
             + (((($cfg.segments.order.line1)? // null) | if . != null and (type != "array") then ["segments.order.line1 is not an array — default used"] else [] end))
             + (((($cfg.segments.order.columns)? // null) | if . != null and (type != "array") then ["segments.order.columns is not an array — default used"] else [] end))
             + (((($cfg.segments.hide)? // null) | if . != null and (type != "array") then ["segments.hide is not an array — default used"] else [] end))
@@ -688,7 +691,8 @@ cfg_th_yellow=70
 cfg_th_red=90
 cfg_reset_display="clock"
 cfg_glyphs="unicode"
-cfg_line1_order="model session ctx thinking effort agent activity drift"
+cfg_hyperlinks="true"
+cfg_line1_order="model session ctx thinking effort agent activity pr drift"
 cfg_columns_order="5h 7d extra"
 cfg_hide=""
 
@@ -707,7 +711,9 @@ if [ -f "$config_file" ]; then
         "cfg_th_red=" + num((.color_thresholds.red)?; 90),
         "cfg_reset_display=" + (((.reset_display)? // "clock") | tostring | @sh),
         "cfg_glyphs=" + (((.glyphs)? // "unicode") | tostring | @sh),
-        "cfg_line1_order=" + toks((.segments.order.line1)?; ["model","session","ctx","thinking","effort","agent","activity","drift"]),
+        "cfg_hyperlinks=" + ((try (if has("hyperlinks") then .hyperlinks else true end) catch true)
+            | (if . == true then "true" else "false" end) | @sh),
+        "cfg_line1_order=" + toks((.segments.order.line1)?; ["model","session","ctx","thinking","effort","agent","activity","pr","drift"]),
         "cfg_columns_order=" + toks((.segments.order.columns)?; ["5h","7d","extra"]),
         "cfg_hide=" + toks((.segments.hide)?; [])
     ' "$config_file" 2>/dev/null) && eval "$cfg_assignments"
@@ -753,6 +759,37 @@ if [ "$term_cols" -gt 0 ]; then
         col_width_default=14
     fi
 fi
+
+# ===== OSC 8 hyperlinks: the bar becomes navigation =====
+# Emitted only when the terminal is known to render them — Terminal.app
+# must never see garbage. FORCE_HYPERLINK=1 overrides detection for
+# tests and unusual setups (=0 forces off); hyperlinks: false in the
+# config kills them regardless.
+hyperlinks_on=false
+if [ "$cfg_hyperlinks" = "true" ]; then
+    if [ -n "${FORCE_HYPERLINK:-}" ]; then
+        [ "$FORCE_HYPERLINK" != "0" ] && hyperlinks_on=true
+    else
+        case "${TERM_PROGRAM:-}" in
+            iTerm.app|WezTerm|ghostty|kitty|vscode) hyperlinks_on=true ;;
+        esac
+        case "${TERM:-}" in
+            *-kitty) hyperlinks_on=true ;;
+        esac
+    fi
+fi
+
+# Usage: cf_link <url> <text> — OSC 8 wrap when supported, plain text
+# otherwise. Emits unexpanded \033/\a sequences like the color palette
+# (printf %b at output expands them). Zero visible width, so no padding
+# math changes anywhere.
+cf_link() {
+    if $hyperlinks_on; then
+        printf '%s' "\033]8;;$1\a$2\033]8;;\a"
+    else
+        printf '%s' "$2"
+    fi
+}
 
 # Usage: segment_hidden <token> — true when token is in segments.hide.
 segment_hidden() {
@@ -845,6 +882,11 @@ session_id=$(echo "$input" | jq -r '.session_id // empty')
 session_name=$(echo "$input" | jq -r '.session_name // empty')
 agent_name=$(echo "$input" | jq -r '.agent.name // empty')
 transcript_path=$(echo "$input" | jq -r '.transcript_path // empty')
+
+# PR context for the clickable #N chip (conditional; v2.1.145+).
+pr_number=$(echo "$input" | jq -r '.pr.number // empty')
+pr_url=$(echo "$input" | jq -r '.pr.url // empty')
+pr_state=$(echo "$input" | jq -r '.pr.review_state // empty')
 
 # ===== Native-first usage source (stdin rate_limits) =====
 # Conditional field (older Claude Code and non-subscription auth omit it)
@@ -1053,6 +1095,23 @@ segment_activity() {
     printf '%s' "${orange}${chip}${reset}"
 }
 
+# PR chip — `#N <glyph>` for the current branch's PR, clickable to the
+# PR page when hyperlinks are on. Review-state glyphs: ✓ approved,
+# ✗ changes requested, ◇ draft, ◌ pending/unreviewed.
+segment_pr() {
+    [ -n "$pr_number" ] || return 0
+    local g color
+    case "$pr_state" in
+        approved)          g="✓" color="$green" ;;
+        changes_requested) g="✗" color="$red" ;;
+        draft)             g="◇" color="$dim" ;;
+        *)                 g="◌" color="$cyan" ;;
+    esac
+    local text="#${pr_number} ${g}"
+    [ -n "$pr_url" ] && text=$(cf_link "$pr_url" "$text")
+    printf '%s' "${color}${text}${reset}"
+}
+
 segment_drift() {
     # Demo renders are deterministic: the user's real version cache must
     # not leak a ↗ signal into a golden render.
@@ -1075,12 +1134,12 @@ segment_drift() {
        [ "$(echo "$drift_installed" | cut -d. -f1-2)" = "$(echo "$drift_upstream" | cut -d. -f1-2)" ]; then
         drift_color="$dim"
     fi
-    printf '%s' "${drift_color}${drift_segment}${reset}"
+    printf '%s' "${drift_color}$(cf_link "https://github.com/FlorianRiquelme/claudefuel/releases" "$drift_segment")${reset}"
 }
 
 line1=""
 for seg in $cfg_line1_order; do
-    case "$seg" in model|session|ctx|thinking|effort|agent|activity|drift) ;; *) continue ;; esac
+    case "$seg" in model|session|ctx|thinking|effort|agent|activity|pr|drift) ;; *) continue ;; esac
     segment_hidden "$seg" && continue
     seg_out=$("segment_${seg}")
     [ -z "$seg_out" ] && continue
@@ -1912,7 +1971,7 @@ column_5h() {
     # col_bar padding deferred — see col1w_actual computation below (cap-ETA may widen col1).
 
     local col1_reset_plain="↻ ${five_hour_reset}"
-    col_reset="${white}↻ ${five_hour_reset}${reset}"
+    col_reset="${white}$(cf_link "https://claude.ai/settings/usage" "↻ ${five_hour_reset}")${reset}"
 
     # Cap-ETA: see ADR-0004. Append to the 5h reset cell when present.
     local cap_eta_plain=""
@@ -1955,7 +2014,7 @@ column_7d() {
     col_bar=$(pad_column "$col_bar" "$col2_bar_vis_len" "$col2w")
 
     local col2_reset_plain="↻ ${seven_day_reset}"
-    col_reset="${white}↻ ${seven_day_reset}${reset}"
+    col_reset="${white}$(cf_link "https://claude.ai/settings/usage" "↻ ${seven_day_reset}")${reset}"
     col_reset=$(pad_column "$col_reset" "${#col2_reset_plain}" "$col2w")
 }
 
@@ -1986,7 +2045,7 @@ column_extra() {
         *)   sym="\$" ;;
     esac
 
-    col_bar="${white}extra:${reset} ${cyan}${sym}${prepaid_amount}${reset}"
+    col_bar="${white}extra:${reset} ${cyan}$(cf_link "https://claude.ai/settings/billing" "${sym}${prepaid_amount}")${reset}"
 
     # Staleness age marker for the prepaid cell (separate cache, own age).
     if [ -n "$prepaid_stale_age" ]; then
@@ -2121,7 +2180,7 @@ if [ "$cfg_glyphs" = "ascii" ]; then
     cf_ascii() {
         sed -e 's/●/#/g; s/○/./g; s/▸/>/g; s/⚠/!/g; s/↻/@/g; s/⇄/=/g' \
             -e 's/◈/*/g; s/⧉/+/g; s/✚/+/g; s/→/>/g; s/⚓/\&/g; s/×/x/g' \
-            -e 's/·/./g; s/≤/</g; s/↗/^/g'
+            -e 's/·/./g; s/≤/</g; s/↗/^/g; s/✓/v/g; s/✗/x/g; s/◌/o/g; s/◇/-/g'
     }
     line1=$(printf '%s' "$line1" | cf_ascii)
     line2=$(printf '%s' "$line2" | cf_ascii)

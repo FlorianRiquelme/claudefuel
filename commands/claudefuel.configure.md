@@ -38,6 +38,7 @@ Presets are expanded by *this skill* into concrete schema-v1 keys at write time 
 | "countdown", "how long until reset" | `reset_display: "countdown"` |
 | "clock times" | `reset_display: "clock"` |
 | "boxes instead of symbols", "glyphs broken", "plain ascii" | `glyphs: "ascii"` |
+| "stop making things clickable", "weird escape codes" | `hyperlinks: false` |
 | "put the weekly bar first", "reorder" | `segments.order.columns` / `segments.order.line1` |
 | "hide X" / "show X" | `segments.hide` add/remove; if X is unrecognized, list valid tokens |
 | "focus mode", "deep work" | **preset `focus`**: minimal + `reset_display: "countdown"` |
@@ -54,7 +55,8 @@ All keys optional; absent keys use the default. Write **sparse**: `"version": 1`
 | `color_thresholds.{orange,yellow,red}` | `50`/`70`/`90` | Utilization % where bars change color (below orange: green). One ladder shared by ctx/5h/7d. |
 | `reset_display` | `"clock"` | Line 3 style: `"clock"` (`↻ 5:30pm`) or `"countdown"` (`↻ in 42m`). |
 | `glyphs` | `"unicode"` | `"ascii"` maps every glyph to an ASCII stand-in (`●`→`#`, `▸`→`>`, …) for fonts/terminals that render boxes. |
-| `segments.order.line1` | `["model","session","ctx","thinking","effort","agent","activity","drift"]` | Line 1 order. `session` = identity chip (`◈ name`), `agent` = subagent badge, `activity` = live tool call (`▸ Bash 12s`). |
+| `hyperlinks` | `true` | OSC 8 clickable cells (reset → usage page, extra → billing, `↗` → releases, `#N` → the PR). Auto-gated to terminals that render them; `false` disables outright. |
+| `segments.order.line1` | `["model","session","ctx","thinking","effort","agent","activity","pr","drift"]` | Line 1 order. `session` = identity chip (`◈ name`), `agent` = subagent badge, `activity` = live tool call (`▸ Bash 12s`), `pr` = clickable `#N` chip with review-state glyph (`✓`/`◌`/`✗`/`◇`). |
 | `segments.order.columns` | `["5h","7d","extra"]` | Column order for Lines 2 **and** 3 (Line 3 mirrors Line 2). |
 | `segments.hide` | `[]` | Any order token above, plus hide-only `"profile"` (the `[name]` badge), `"cap_eta"` (the `~cap` range, ADR-0004), `"projection"` (the `→N%` landing prediction on the 5h cell), and `"sessions"` (the `⧉ N` shared-window session count). |
 
