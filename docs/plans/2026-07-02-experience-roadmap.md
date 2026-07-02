@@ -1,6 +1,6 @@
 # Statusline Experience Roadmap — 2026-07-02
 
-**Status:** approved for pickup · **Author:** ideation session 2026-07-02 · **Task ref:** task #10 ("Write roadmap plan for ranked ideas")
+**Status:** implemented 2026-07-02 (R1–R8 merged to main; version bump deferred to release prep) · **Author:** ideation session 2026-07-02 · **Task ref:** task #10 ("Write roadmap plan for ranked ideas")
 
 This plan is self-contained: a session with no prior context can pick any workstream and execute it. It sequences the ranked ideas from the 2026-07-02 research round (repo capability map + Claude Code statusline API brief + ecosystem survey of ~15 competitors) into concrete workstreams.
 
