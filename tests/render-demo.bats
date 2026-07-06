@@ -144,12 +144,14 @@ demo() {
   [[ "$out" != *"extra:"* ]]
 }
 
-@test "a hidden extra column calm-collapses the healthy demo to line 1 (truthful preview)" {
+@test "hiding the extra column drops it but keeps the usage bars (truthful preview)" {
   candidate="$SHIM_DIR/candidate.json"
   printf '{"version":1,"segments":{"hide":["extra"]}}\n' > "$candidate"
 
   out=$(CLAUDEFUEL_CONFIG="$candidate" demo healthy | strip_ansi)
-  [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" -eq 1 ]
+  [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" -eq 3 ]
+  [[ "$out" == *"5h:"* ]]
+  [[ "$out" != *"extra:"* ]]
 }
 
 @test "unknown demo state is a usage error" {

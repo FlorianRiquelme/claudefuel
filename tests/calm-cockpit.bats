@@ -6,11 +6,10 @@
 # prepaid, and version caches so the script never touches OAuth or the
 # network, feed stdin, assert on stdout.
 #
-# Contract under test (earn-your-pixels):
-#   - Lines 2-3 collapse entirely when all windows are nominal:
-#     5h and 7d below 50% (first alarm threshold), no window projected
-#     to cap before its own reset, no live extra spend. Line 1 always
-#     renders.
+# Contract under test:
+#   - The usage bars (lines 2-3) always render, including when all
+#     windows are nominal — the gauge must be readable at any level so
+#     you can always judge remaining headroom.
 #   - >=90% escalates with shape/weight (⚠ label prefix, inverse-video
 #     pct), not hue alone.
 #   - The governing constraint — whichever window hits 100% first at the
@@ -96,23 +95,24 @@ line_count() {
   printf '%s' "$1" | wc -l | tr -d ' '
 }
 
-# ---- Nominal collapse ----
+# ---- Bars always render ----
 
-@test "nominal: lines 2-3 collapse, only line 1 renders" {
+@test "nominal: usage bars still render (lines 2-3 always present)" {
   # 5h: 20% with 3h left (elapsed 2h, burn 10%/h < 20%/h reset-pace).
   # 7d: 12% with 2d left (elapsed 5d, burn ~2.4%/d — far under pace).
-  # Extra disabled. All gates calm -> single-line bar.
+  # Extra disabled. Even fully calm, the gauge must stay readable.
   seed_usage_cache 20 10800 12 172800
 
   output=$(run_bar)
-  [ "$(line_count "$output")" -eq 0 ]
-  line1=$(printf '%s' "$output" | head -n1)
-  [ -n "$line1" ]
+  [ "$(line_count "$output")" -eq 2 ]
+  line2=$(printf '%s' "$output" | sed -n '2p' | strip_ansi)
+  [[ "$line2" == *"5h:"* ]]
+  [[ "$line2" == *"7d:"* ]]
 }
 
-@test "non-nominal: a window at >=50% grows the bar back to 3 lines" {
+@test "non-nominal: a window at >=50% also renders the bars" {
   # 5h: 55% with 1h left (elapsed 4h, burn 13.75%/h — under pace, no
-  # cap), but 55% crosses the first alarm threshold. Bar must grow.
+  # cap), but 55% crosses the first alarm threshold.
   seed_usage_cache 55 3600 12 172800
 
   output=$(run_bar)

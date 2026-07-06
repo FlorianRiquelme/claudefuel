@@ -2096,7 +2096,6 @@ if [ "$usage_source" = "stdin" ] \
     elif [ -n "$seven_day_cap" ]; then governing="7d"
     fi
 
-    extra_rendered=false
     for col in $cfg_columns_order; do
         case "$col" in 5h|7d|extra) ;; *) continue ;; esac
         segment_hidden "$col" && continue
@@ -2106,7 +2105,6 @@ if [ "$usage_source" = "stdin" ] \
         if [ -n "$col_bar" ]; then
             [ -n "$line2" ] && line2+="$sep"
             line2+="$col_bar"
-            [ "$col" = "extra" ] && extra_rendered=true
         fi
         if [ -n "$col_reset" ]; then
             [ -n "$line3" ] && line3+="$sep"
@@ -2148,21 +2146,6 @@ if [ "$usage_source" = "stdin" ] \
         fi
     fi
 
-    # Calm-cockpit collapse: when every window is nominal the rows below
-    # Line 1 earn no pixels — the bar physically growing back is the
-    # pre-attentive alarm. Nominal = 5h and 7d both below 50% (the first
-    # alarm threshold in build_bar), no window projected to cap before
-    # its own reset (governing empty, which also covers cap-ETA), no live
-    # spend on extra, and no severe-staleness warning pending (collapsing
-    # would hide an active fetch-failure alarm). The switch hint requires
-    # active_governing_pct >= 80 to fire at all, so it can never appear
-    # in a state collapse would otherwise trigger — no extra guard needed.
-    # Line 1 always renders.
-    if [ "$five_hour_pct" -lt 50 ] && [ "$seven_day_pct" -lt 50 ] \
-        && [ -z "$governing" ] && ! $extra_rendered && ! $usage_stale; then
-        line2=""
-        line3=""
-    fi
 elif [ -n "$usage_failure" ]; then
     # Failed gauge reads FAILED: no data to show and a known failure class.
     # One-glyph diagnosis + trailhead, mirroring the ↗ drift segment:

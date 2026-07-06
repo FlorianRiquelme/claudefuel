@@ -245,9 +245,10 @@ make_stale() {
   [[ "$line3" == *"~cap"* ]]
 }
 
-@test "calm-cockpit collapse works from stdin values (nominal windows hide lines 2-3)" {
+@test "usage bars render from stdin values even when windows are nominal" {
   output=$(stdin_with_rl 5 12 | CLAUDEFUEL_OFFLINE=1 PATH="$SHIM_PATH" "$STATUSLINE" | strip_ansi)
 
   [[ "$output" == *"ctx"* ]]
-  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 1 ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 3 ]
+  [[ "$(printf '%s' "$output" | sed -n '2p')" == *"5h:"* ]]
 }
