@@ -1,6 +1,6 @@
 # Update flow redesign
 
-Superseded: Resolved into [[0005-update-flow-script-led]] and implementation plan in `update-redesign-implementation.md`.
+Superseded: Resolved into [ADR-0005](../adr/0005-update-flow-script-led.md) and implementation plan in `update-redesign-implementation.md`.
 
 Status: design, not implemented
 Captured: 2026-05-15 brainstorm session

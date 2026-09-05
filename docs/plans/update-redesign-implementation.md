@@ -1,7 +1,7 @@
 # Update flow redesign — implementation plan
 
 Status: planned, not started
-Drives: [[0005-update-flow-script-led]]
+Drives: [ADR-0005](../adr/0005-update-flow-script-led.md)
 Supersedes the design intent of `update-redesign.md` (the design doc that resolved into ADR-0005)
 
 ## Shape
@@ -20,13 +20,13 @@ Goal: the language and contracts that the rest of the plan refers to exist in wr
    - Acceptance: file exists, linked from `README.md` "Releases" section if one exists, otherwise from `CONTEXT.md`'s stability-contract section.
 
 2. **`CONTEXT.md` edits.** Glossary updates driven by ADR-0005.
-   - **Promptfile**: narrow scope to `/claudefuel.configure`. Add one sentence: "Install and update are no longer Promptfile-driven — see [[0005-update-flow-script-led]]."
+   - **Promptfile**: narrow scope to `/claudefuel.configure`. Add one sentence: "Install and update are no longer Promptfile-driven — see [ADR-0005](../adr/0005-update-flow-script-led.md)."
    - **Reconcile**: keep the term and definition; add one sentence that the operator is now the `claudefuel` script (on success) and the bundle-scoped LLM (on failure).
    - **Desired state**: add one sentence that the contract now lives executably in the `claudefuel` script, with `INSTALL.md`'s desired-state section as its human-readable mirror.
    - **Drift** / **Drift signal**: unchanged.
    - **Stability contract** section: add `~/.claude/claudefuel` (the on-disk binary path) to the list of names. Removing or renaming it would strand existing users (their local `claudefuel` would not know how to fetch its replacement).
 
-3. **`docs/plans/update-redesign.md`** — mark as superseded. One-line note at top: "Resolved into [[0005-update-flow-script-led]] and implementation plan in `update-redesign-implementation.md`." Don't delete; it's the design audit trail.
+3. **`docs/plans/update-redesign.md`** — mark as superseded. One-line note at top: "Resolved into [ADR-0005](../adr/0005-update-flow-script-led.md) and implementation plan in `update-redesign-implementation.md`." Don't delete; it's the design audit trail.
 
 Acceptance gate for Phase 1: ADR-0005, `docs/release-notes.md`, and the updated `CONTEXT.md` all live in the repo. No code changes yet.
 

@@ -2,7 +2,7 @@
 
 Created: 2026-06-14
 Type: fix
-Drives: [[0005-update-flow-script-led]]
+Drives: [ADR-0005](../adr/0005-update-flow-script-led.md)
 Companion to: `docs/plans/update-redesign-implementation.md` (the phased redesign plan; this plan remediates review findings against its Phase 2–4 output)
 
 ---

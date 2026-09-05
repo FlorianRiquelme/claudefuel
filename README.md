@@ -266,3 +266,16 @@ Once a cache exists the render never waits on the network — if it still feels 
 - **IDE integration** may not work correctly with custom config dirs ([anthropics/claude-code#4739](https://github.com/anthropics/claude-code/issues/4739))
 - **Project-level `.claude/` dirs** are still created in workspaces regardless of `CLAUDE_CONFIG_DIR` ([#3833](https://github.com/anthropics/claude-code/issues/3833))
 - `--dangerously-skip-permissions` still prompts for writes to `.claude/` and `.git/` dirs ([#35718](https://github.com/anthropics/claude-code/issues/35718))
+
+## Design docs
+
+The decisions behind the bar are in the repo, not just in the commit log:
+
+- [CONTEXT.md](CONTEXT.md) — the project's vocabulary and the stability contract (names that can't be renamed without stranding installed users).
+- [docs/adr/](docs/adr/) — the architecture decisions the code refers to by number:
+  [ADR-0001](docs/adr/0001-paste-line-not-plugin.md) (Promptfile, not a plugin),
+  [ADR-0002](docs/adr/0002-upgrade-trust-boundary.md) (upgrade trust boundary),
+  [ADR-0003](docs/adr/0003-stay-bash-conversational-customization.md) (stay bash; Claude is the config UI),
+  [ADR-0004](docs/adr/0004-stateless-cap-eta-on-line-3.md) (stateless cap-ETA),
+  [ADR-0005](docs/adr/0005-update-flow-script-led.md) (script-led update flow).
+- [docs/design/](docs/design/) and [docs/plans/](docs/plans/) — design explorations and implementation plans. Audit trail rather than current behaviour — superseded documents say so at the top.
