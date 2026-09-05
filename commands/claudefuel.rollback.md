@@ -20,14 +20,14 @@ If `$latest` is empty, report "no backups found — nothing to roll back" and st
 
 ## Step 2 — Show the user what will be restored
 
-Walk every bundle artifact and list any `*.bak-${latest}` that exists. The bundle covers `statusline.sh`, `settings.json`, and the seven `commands/claudefuel.*.md` files:
+Walk every bundle artifact and list any `*.bak-${latest}` that exists. The bundle covers `statusline.sh`, `settings.json`, and the eight `commands/claudefuel.*.md` files:
 
 ```bash
 artifacts=(
   "$target_dir/statusline.sh"
   "$target_dir/settings.json"
 )
-for name in update doctor rollback uninstall configure why coach; do
+for name in update doctor rollback uninstall configure why coach fleet; do
   artifacts+=("$target_dir/commands/claudefuel.${name}.md")
 done
 

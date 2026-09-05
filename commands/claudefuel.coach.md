@@ -1,7 +1,7 @@
 ---
 description: Ask usage questions in plain language — answered from the current snapshot with a recommendation
 ---
-# claudefuel-skill: v0.4.0
+# claudefuel-skill: v0.4.6
 
 Answer the user's usage question in prose, reasoning from the bar's snapshot and the ADR-0004 math. The display stays dumb; the recommendation is conversational reasoning performed fresh on each invocation — **never** propose encoding advice rules into `statusline.sh` or any script. Read-only: the only command this skill runs is the snapshot dump.
 
@@ -16,7 +16,7 @@ target_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 snapshot=$("$target_dir/statusline.sh" --snapshot)
 ```
 
-Validate `.schema == {"name": "claudefuel-snapshot", "version": 2}` (version 1 from an older installed script is also fine — it just lacks the `config` block) — on a different name or a greater version, show the raw JSON and point at `/claudefuel.update` instead of guessing. If the usage cache is absent or stale (`.caches.usage`), say so and weaken every conclusion accordingly.
+Validate `.schema == {"name": "claudefuel-snapshot", "version": 2}` (version 1 from an older installed script is also fine — it just lacks the `config` block) — on a different name or a greater version, show the raw JSON and point at `/claudefuel.update` instead of guessing. If the usage cache is absent or stale (`.caches.usage`), say so and weaken every conclusion accordingly. `.caches.usage.source` is `"stdin"` or `"oauth"` (TTL 2s vs 300s) — mention which one is backing the numbers when the user asks how current they are.
 
 ## Step 3 — Reason to a recommendation
 

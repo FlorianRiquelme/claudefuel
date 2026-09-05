@@ -1,7 +1,7 @@
 ---
 description: Explain the bar's current numbers — annotated snapshot with the full derivation chain
 ---
-# claudefuel-skill: v0.4.0
+# claudefuel-skill: v0.4.6
 
 Show-your-work view of the bar's current state. Annotate every number and every gate decision against the derivation chain documented in ADR-0004. Read-only: do not fetch anything, do not modify any file. The snapshot is the only input.
 
@@ -21,7 +21,7 @@ This skill understands `.schema == {"name": "claudefuel-snapshot", "version": 2}
 ## Step 3 — Annotate, in this order
 
 1. **Profile.** `.profile.name` and `.profile.config_dir` — which account's numbers these are.
-2. **Cache health.** For each entry in `.caches` (usage, prepaid, upstream_version): present/absent, age vs TTL, fresh or stale. Stale data must be labeled stale — a number from a stale cache is yesterday's fuel reading, never present it as current. If the usage cache is absent, say the bar has not rendered recently for this profile and stop after reporting versions.
+2. **Cache health.** For each entry in `.caches` (usage, prepaid, upstream_version): present/absent, age vs TTL, fresh or stale. `.caches.usage.source` is `"stdin"` or `"oauth"` — say which one is backing the bar; TTL is 300s for the OAuth cache and 2s for the stdin/native mirror, so state the source whenever explaining a number's freshness. Stale data must be labeled stale — a number from a stale cache is yesterday's fuel reading, never present it as current. If the usage cache is absent, say the bar has not rendered recently for this profile and stop after reporting versions.
 3. **Versions.** `.versions.installed` vs `.versions.upstream`; whether the `↗ /claudefuel.update` drift signal is currently earned (`.versions.drift`).
 4. **The 5-hour derivation chain.** Walk `.derived.five_hour` through the ADR-0004 arithmetic, plugging in the actual numbers and converting epochs to the user's local time:
 
@@ -46,4 +46,4 @@ This skill understands `.schema == {"name": "claudefuel-snapshot", "version": 2}
 
 - Burn rate is the **average** over the open window, never instantaneous — the bar persists nothing between renders. If the user idled early and is bursting now, the average lags reality; say so.
 - The ±15 min cap-ETA band is an honesty signal, not a statistical interval.
-- If the user wants fresher numbers, tell them the bar refreshes its usage cache on the next render (60 s TTL) — do not curl the API from this skill.
+- If the user wants fresher numbers, tell them the bar refreshes its usage cache on the next render (300s TTL for the OAuth cache, 2s for the stdin/native mirror) — do not curl the API from this skill.

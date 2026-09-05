@@ -14,22 +14,17 @@ five_hour="${3:-30}"
 seven_day="${4:-50}"
 extra_cents="${5:-1000}"
 
-# Match statusline.sh's hash derivation exactly:
-#   config_hash=$(echo -n "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
 export CLAUDE_CONFIG_DIR="$HOME/.claude-${profile}"
-config_hash=$(echo -n "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-cache_file="/tmp/claude/statusline-usage-cache-${config_hash}.json"
+cache_file="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json"
 
-mkdir -p /tmp/claude
+mkdir -p "$CLAUDE_CONFIG_DIR/cache"
 cat > "$cache_file" <<EOF
 {
   "five_hour":  {"utilization": ${five_hour}, "resets_at": "2026-05-12T20:20:00Z"},
   "seven_day":  {"utilization": ${seven_day}, "resets_at": "2026-05-15T22:00:00Z"},
-  "extra_usage": {"is_enabled": true, "utilization": $((extra_cents * 100 / 17000)), "used_credits": ${extra_cents}, "monthly_limit": 17000}
+  "extra_usage": {"is_enabled": true, "used_credits": ${extra_cents}}
 }
 EOF
-
-extra_pct=$(( five_hour > 0 ? five_hour / 2 : 0 ))
 
 printf '%s' "{\"model\":{\"display_name\":\"Claude Sonnet 4.6\"},\"workspace\":{\"current_dir\":\"/tmp\"},\"session_id\":\"demo\",\"context_window\":{\"context_window_size\":200000,\"current_usage\":{\"input_tokens\":${tokens},\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}" \
   | ./statusline.sh

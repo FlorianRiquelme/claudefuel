@@ -205,13 +205,6 @@ else
     ok "Aliases added"
 fi
 
-# ── Step 5: Clear stale shared cache ──────────────────────────────────────────
-
-if [ -f /tmp/claude/statusline-usage-cache.json ]; then
-    run rm -f /tmp/claude/statusline-usage-cache.json
-    ok "Cleared stale shared usage cache"
-fi
-
 # ── Summary ────────────────────────────────────────────────────────────────────
 
 echo ""

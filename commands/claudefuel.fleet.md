@@ -1,7 +1,7 @@
 ---
 description: Show every known profile's cached usage at a glance (fleet view)
 ---
-# claudefuel-skill: v0.4.0
+# claudefuel-skill: v0.4.6
 
 Render a compact fleet table of every Claude Code profile claudefuel has rendered recently, read from the per-profile usage caches already on disk. Strictly read-only: never fetch usage for a profile that isn't active in this terminal — only show what is already cached, and always show how old each snapshot is. Use `$CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`, as `$target_dir`.
 
@@ -14,7 +14,7 @@ Render a compact fleet table of every Claude Code profile claudefuel has rendere
 
    `sessions` counts the live Claude Code sessions currently drawing on that profile's account window (heartbeats fresher than 5 minutes). More than 1 means the window is shared — the usual explanation for a bar that runs hot or stale faster than one session can account for.
 
-2. **If the output is empty**, tell the user no profile caches were found — a profile appears here only after its status bar has rendered at least once (which writes `/tmp/claude/statusline-usage-cache*.json`). Do not fetch anything on their behalf.
+2. **If the output is empty**, tell the user no profile caches were found — a profile appears here only after its status bar has rendered at least once (which writes `$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json`). Do not fetch anything on their behalf.
 
 3. **Render a markdown table**, one row per profile:
 

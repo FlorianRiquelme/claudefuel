@@ -11,10 +11,10 @@ Check these in order and report each result on its own line:
    - `[ -x "$target_dir/statusline.sh" ]`
 2. **`statusline.sh` has a parseable version header.**
    - `head -20 "$target_dir/statusline.sh" | grep -E '^# claudefuel: v[0-9]+\.[0-9]+\.[0-9]+$'`
-3. **`settings.json` is valid JSON with the expected `.statusLine` value.**
-   - `jq -e '.statusLine.command == "~/.claude/statusline.sh"' "$target_dir/settings.json"`
-4. **All seven command files present, each with a parseable `# claudefuel-skill:` header.**
-   - For each of `update`, `doctor`, `rollback`, `uninstall`, `configure`, `why`, `coach`: file exists and `head -20` contains a matching header line.
+3. **`settings.json` is valid JSON with the expected `.statusLine` and `.subagentStatusLine` values.**
+   - `jq -e '.statusLine.command == "~/.claude/statusline.sh" and .subagentStatusLine.command == "~/.claude/statusline.sh --subagent"' "$target_dir/settings.json"`
+4. **All eight command files present, each with a parseable `# claudefuel-skill:` header.**
+   - For each of `update`, `doctor`, `rollback`, `uninstall`, `configure`, `why`, `coach`, `fleet`: file exists and `head -20` contains a matching header line.
 5. **`jq` and `curl` are on `PATH`.**
 6. **Statusline runs without error on a sample input.**
    ```bash
@@ -44,12 +44,12 @@ Run this section only when the user asks about statusline latency (e.g. "doctor 
      | CLAUDEFUEL_TIMING=1 "$target_dir/statusline.sh" >/dev/null
    ```
    Expected on stderr: one `claudefuel-timing: <stage> <N>ms` line per stage — `jq-parse`, `drift`, `usage`, `prepaid`, `render`.
-3. **Compare against the published budget.** The budget assumes a warm cache (`/tmp/claude/statusline-usage-cache*.json` younger than 60s):
+3. **Compare against the published budget.** The budget assumes a warm cache (`$target_dir/cache/claudefuel-usage.json` younger than the cache's own TTL — 300s/5min on the OAuth fallback path, or up to 30min when stdin `rate_limits` already drives the bars and the cache is only enriching the `extra` column):
 
    | Measurement | Budget |
    |---|---|
-   | Full cached render (sum of all stages) | < 250 ms |
-   | Any single stage | < 100 ms |
+   | Full cached render (sum of all stages) | < 400 ms (≈300 ms measured on a Linux VM; a laptop lands well under) |
+   | Any single stage | < 250 ms |
    | `usage` / `drift` / `prepaid` stage with a **stale** cache | same budgets — staleness must never add foreground network wait (never-block contract) |
 
    Each timing mark spawns one `jq` for the clock, so the instrumented total runs a few tens of ms above the uninstrumented render — that overhead is inside the budget, not in addition to it.
@@ -64,11 +64,11 @@ When the user asks where a number comes from (or whether the bars are trustworth
 
 | Number | With stdin `rate_limits` (Claude Code ≥2.1.x, subscription auth) | Without (older Claude Code, fallback) |
 |---|---|---|
-| 5h / 7d bars, line-3 resets, cap-ETA/pace math | stdin — per-render fresh, zero network, agrees with Claude Code's own UI by construction; **never** carries an age marker | OAuth usage cache (`/tmp/claude/statusline-usage-cache*.json`), age markers apply |
-| `extra` balance | OAuth prepaid cache — always; own `·age` marker | same |
-| fleet view / `⇄` switch hint | sibling profiles' OAuth caches — always; ages shown | same |
+| 5h / 7d bars, line-3 resets, cap-ETA/pace math | stdin — per-render fresh, zero network, agrees with Claude Code's own UI by construction; **never** carries an age marker | OAuth usage cache (`$target_dir/cache/claudefuel-usage.json`), age markers apply |
+| `extra` balance | OAuth prepaid cache — enriched every 30 min while stdin drives the bars; own `·age` marker | OAuth prepaid cache — enriched every 5 min; own `·age` marker |
+| `--snapshot`, `--fleet`, `⇄` switch hint | `$target_dir/cache/claudefuel-native.json` (the stdin mirror) when it is fresher than the OAuth cache, else the OAuth cache | sibling profiles' OAuth caches — always; ages shown |
 
-Check 8 proves the stdin path; check 6's sample (no `rate_limits`) exercises the fallback. If check 8 shows `62%`/`31%` but the user's live bar carries `·age` markers on the 5h cell, their Claude Code is not sending `rate_limits` (too old, or non-subscription auth) — the bar is on the OAuth fallback and that is expected, not a defect.
+Check 8 proves the stdin path; check 6's sample (no `rate_limits`) exercises the fallback. If check 8 shows `62%`/`31%` but the user's live bar carries `·age` markers on the 5h cell, their Claude Code is not sending `rate_limits` (too old, or non-subscription auth) — the bar is on the OAuth fallback and that is expected, not a defect. With stdin driving the bars, the OAuth usage endpoint is still polled — just on a slower 30-minute cadence, solely to keep the `extra` column current.
 
 ## Failure glyphs on the bar
 

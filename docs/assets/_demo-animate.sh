@@ -16,7 +16,8 @@ sleep 0.25
 printf '\033[H\033[J'
 
 unset CLAUDE_CONFIG_DIR
-mkdir -p /tmp/claude
+cache_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cache"
+mkdir -p "$cache_dir"
 
 # Compute reset timestamps relative to render time so the cap-ETA tracer
 # in statusline.sh has a future window to project against. Placing the
@@ -32,9 +33,8 @@ sd_reset=$(date -u -v+3d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
 
 emit_cache() {
   local fh="$1" sd="$2" credits="$3"
-  local extra_pct=$(( credits * 100 / 17000 ))
-  cat > /tmp/claude/statusline-usage-cache.json <<EOF
-{"five_hour":{"utilization":${fh},"resets_at":"${fh_reset}"},"seven_day":{"utilization":${sd},"resets_at":"${sd_reset}"},"extra_usage":{"is_enabled":true,"utilization":${extra_pct},"used_credits":${credits},"monthly_limit":17000}}
+  cat > "$cache_dir/claudefuel-usage.json" <<EOF
+{"five_hour":{"utilization":${fh},"resets_at":"${fh_reset}"},"seven_day":{"utilization":${sd},"resets_at":"${sd_reset}"},"extra_usage":{"is_enabled":true,"used_credits":${credits}}}
 EOF
 }
 
@@ -53,8 +53,6 @@ emit_bar() {
 # The first frame stays under the cap-ETA noise gate (pct_used < 10), so
 # the 5h reset cell shows the dormant baseline. From frame 2 onward the
 # tracer kicks in and the `~cap` range tightens as burn accelerates.
-# Calm cockpit: early frames where both windows are nominal (and no cap
-# projects) collapse to Line 1 only — the bar growing back IS the alarm.
 # The final frame (96/94) escalates with ▸ and ⚠ + inverse-video pct.
 frames=(
   "8000    6   18   200"

@@ -24,25 +24,18 @@ Or `/claudefuel.uninstall` from inside a Claude Code session.
 
 ## What you get
 
-- **Line 1:** model · `ctx` bar with `<used>/<total>` tokens · thinking on/off · effort level (when the model supports it). When a newer release is available, an `↗ /claudefuel.update` segment appears here as a one-glyph drift signal — faint for a patch-level bump, yellow for minor/major.
+- **Line 1:** model · `ctx` bar with `<used>/<total>` tokens · thinking on/off · effort level (when the model supports it). A `◈ session` chip appears once the session has a name (`claude --name`, or `/rename` mid-session), an `agent: <name>` badge shows inside subagent panel rows, and a live `▸ <tool> <age>` chip tracks whatever tool call is currently running. A clickable `#N` PR chip with a review-state glyph appears when the workspace has an open PR. When a newer release is available, an `↗ /claudefuel.update` segment appears here as a one-glyph drift signal — faint for a patch-level bump, yellow for minor/major.
 - **Line 2:** `5h` / `7d` / `extra` usage progress bars (matches the `.five_hour` / `.seven_day` / `.extra_usage` fields the API returns). The `extra` column shows your prepaid credit balance, and only appears once spend is live (> $0 this month). A `▸` marker flags the governing constraint — whichever window would hit 100% first at your current pace (dive-computer style: the column is marked, never reordered). At ≥ 90% a column escalates with shape and weight, not hue alone: `⚠` label prefix and inverse-video percentage. While you're burning the 5-hour window faster than reset-pace, the 5h percent gives way to a burn chip — `~1h38m ×1.4`: time left at the current pace, and that pace as a multiple of the rate that would just last until reset. Dormant at ×1.0 or below (the bar fill still carries the percent).
 - **Line 3:** `↻` reset times for each window. When you're burning through the 5-hour window faster than reset-pace, a `~cap HH:MM-HH:MM` segment appears next to the 5h reset — a rough estimate of when you'll hit 100% at the current pace, with a range that scales with the horizon (±15% of the time to cap, never tighter than ±5min). Two companions ride along: `slow ≤0.6×` — the pace to drop to so the remaining budget lasts until reset — and `⚓ 1h21m` — the dead time you'd sit locked out between the projected cap and the reset (hidden when under 5 minutes). Dormant when healthy; the tilde and range signal it's a prediction, not a precise time.
 - Prefer a countdown over the wall clock for the 5-hour reset? Set `CLAUDEFUEL_RESET_COUNTDOWN=1` in your environment (or `reset_display: "countdown"` in `claudefuel.json` — see [Configuration](#configuration)) and Line 3 renders `↻ in 2h59m` instead. The clock stays the default.
 - Cross-platform: macOS Keychain, Linux credentials file / GNOME Keyring
 - Color-coded: green → orange → yellow → red as you burn through limits — with the shape/weight escalations above so severity never rides on hue alone
-- **Never-block render:** the bar always paints instantly from its cache — a stale cache still paints while a detached one-shot background fetch refreshes it for the next render. Only the very first render after install waits on the network. Set `CLAUDEFUEL_OFFLINE=1` to skip all fetches entirely (the cached values keep painting).
+- **Never-block render:** the bar always paints instantly from its cache — a stale cache still paints while a detached one-shot background fetch refreshes it for the next render. Only the very first render after install waits on the network. When Claude Code passes `rate_limits` on stdin, the 5h/7d bars need no network call at all — the OAuth usage endpoint is only polled every 30 minutes in that case, purely to enrich the `extra` column. Set `CLAUDEFUEL_OFFLINE=1` to skip all fetches entirely (the cached values keep painting).
 - **Honest gauge:** stale data never poses as fresh — cached snapshots render with an age marker (`5h: ●●●●●●○○○○ 62% ·9m` = 9 minutes old). When there's no data to show at all, a one-glyph diagnosis plus a `✚ /claudefuel.doctor` trailhead replaces the usage rows (`⊘` credentials, `⚠` network, `?` missing dependency). The bar reads credentials read-only and never refreshes tokens itself — Claude Code handles that on its own schedule.
 
-### The calm cockpit
+### Severity is structural, not just hue
 
-Lines 2–3 only render when there's something worth watching — the bar physically growing is the alarm. When everything is **nominal**, the bar collapses to Line 1 alone. Nominal means all of:
-
-- the 5-hour **and** 7-day windows are below 50% (the first alarm threshold),
-- no window is projected to hit 100% before its own reset at your current pace (so no `▸` and no `~cap`),
-- no live extra spend to report (extra column hidden at $0 or when extra usage is off),
-- no severe-staleness warning pending (an active fetch-failure alarm always stays visible).
-
-Cross any of those gates and lines 2–3 reappear in their usual stable layout.
+Lines 2–3 render as soon as there's usage data, in a stable layout that's never reordered. Severity rides on shape and weight rather than color alone: a `▸` marker flags the governing constraint — whichever window would hit 100% first at your current pace — and any window at ≥90% escalates with a `⚠` label prefix plus an inverse-video value, so it reads even on a monochrome terminal. The `extra` column only appears once spend is live (>$0 this month) — it's absent otherwise, not just dim.
 
 ## Works with multiple Claude Code accounts
 
@@ -53,7 +46,7 @@ Cross any of those gates and lines 2–3 reappear in their usual stable layout.
 It does this by:
 
 1. Deriving the keychain service name with the same SHA256 hash Claude Code uses (`Claude Code-credentials-<first-8-of-sha256>`).
-2. Using a per-profile cache file (`/tmp/claude/statusline-usage-cache-<hash>.json`).
+2. Using a per-profile cache directory (`$CLAUDE_CONFIG_DIR/cache/`).
 3. Reading settings from the active profile directory.
 
 ```
@@ -114,9 +107,11 @@ Run `/claudefuel.configure` to edit it conversationally, or write it by hand. Al
   "theme": "default",
   "color_thresholds": { "orange": 50, "yellow": 70, "red": 90 },
   "reset_display": "clock",
+  "glyphs": "unicode",
+  "hyperlinks": true,
   "segments": {
     "order": {
-      "line1": ["model", "ctx", "thinking", "effort", "drift"],
+      "line1": ["model", "session", "ctx", "thinking", "effort", "agent", "activity", "pr", "drift"],
       "columns": ["5h", "7d", "extra"]
     },
     "hide": []
@@ -127,8 +122,12 @@ Run `/claudefuel.configure` to edit it conversationally, or write it by hand. Al
 - **`theme`** — `"default"` (truecolor) or `"mono"` (no hues).
 - **`color_thresholds`** — utilization % at which bars turn orange / yellow / red (below orange: green). One ladder, shared by the ctx, 5h, and 7d bars.
 - **`reset_display`** — `"clock"` (`↻ 5:30pm`) or `"countdown"` (`↻ in 42m`) on line 3.
-- **`segments.order`** — `line1` orders the line-1 segments; `columns` orders the 5h/7d/extra columns on lines 2 and 3 together (line 3 always mirrors line 2).
-- **`segments.hide`** — tokens to hide: any order token above, plus the hide-only badges `"profile"` (the `[name]` prefix) and `"cap_eta"` (the `~cap` range on the 5h reset cell).
+- **`glyphs`** — `"unicode"` (default) or `"ascii"`, which maps every glyph to an ASCII stand-in for fonts/terminals that render boxes.
+- **`hyperlinks`** — `true` (default) or `false` to disable the OSC 8 clickable cells (reset → usage page, extra → billing, `↗` → releases, `#N` → the PR).
+- **`segments.order`** — `line1` orders the line-1 segments (`session` is the identity chip, `agent` the subagent badge, `activity` the live tool-call chip, `pr` the clickable `#N` chip); `columns` orders the 5h/7d/extra columns on lines 2 and 3 together (line 3 always mirrors line 2).
+- **`segments.hide`** — tokens to hide: any order token above, plus the hide-only badges `"profile"` (the `[name]` prefix), `"cap_eta"` (the `~cap` range on the 5h reset cell), `"projection"` (the `→N%` landing prediction), and `"sessions"` (the `⧉ N` shared-window session count).
+
+The `◈ session` chip only renders once the session has a name (`claude --name`, or `/rename` mid-session).
 
 Scope is deliberately minor tweaks only — color thresholds, segment ordering, segment show/hide, theme presets. Custom segments, user data sources, and embedded scripts are out of scope by design.
 
@@ -147,9 +146,9 @@ Install, upgrade, and uninstall are bundled atomically — every artifact below 
 **Created / managed by the bundle:**
 
 - `~/.claude/statusline.sh` — the script itself
-- `~/.claude/commands/claudefuel.{update,doctor,rollback,uninstall,configure,why,coach}.md` — the seven slash commands
-- `~/.claude/cache/` — drift-check cache directory (contents owned by the script at runtime)
-- The single key `.statusLine` in `~/.claude/settings.json`
+- `~/.claude/commands/claudefuel.{update,doctor,rollback,uninstall,configure,why,coach,fleet}.md` — the eight slash commands
+- `~/.claude/cache/` — runtime cache directory (contents owned by the script at runtime)
+- The `.statusLine` and `.subagentStatusLine` keys in `~/.claude/settings.json`
 
 **Never touched:**
 
