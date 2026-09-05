@@ -63,9 +63,9 @@ EOF
   [[ "$line1" == *"◈ refactor-auth"* ]]
 }
 
-@test "session chip: falls back to a short session_id stem" {
+@test "session chip: no chip when only session_id is present (no session_name)" {
   line1=$(render_line1 ',"session_id":"97effbcf-99f3-49b4"')
-  [[ "$line1" == *"◈ 97effb"* ]]
+  [[ "$line1" != *"◈"* ]]
 }
 
 @test "session chip: absent without session identity, hideable via 'session'" {
@@ -79,9 +79,9 @@ EOF
 }
 
 @test "session chip color is stable across renders of the same session" {
-  a=$(printf '{"model":{"display_name":"Claude"},"session_id":"abc-123"}' \
+  a=$(printf '{"model":{"display_name":"Claude"},"session_id":"abc-123","session_name":"refactor-auth"}' \
     | CLAUDEFUEL_OFFLINE=1 CLAUDEFUEL_NOW=$NOW "$STATUSLINE" | sed -n '1p')
-  b=$(printf '{"model":{"display_name":"Claude"},"session_id":"abc-123"}' \
+  b=$(printf '{"model":{"display_name":"Claude"},"session_id":"abc-123","session_name":"refactor-auth"}' \
     | CLAUDEFUEL_OFFLINE=1 CLAUDEFUEL_NOW=$NOW "$STATUSLINE" | sed -n '1p')
   [ "$a" = "$b" ]
   [[ "$a" == *$'\x1b[38;2'* ]]

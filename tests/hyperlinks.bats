@@ -17,10 +17,8 @@ setup() {
   printf '{"upstream_version":"%s"}\n' "$installed_version" \
     > "$CLAUDE_CONFIG_DIR/cache/claudefuel-version.json"
 
-  config_hash=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-  USAGE_CACHE="/tmp/claude/statusline-usage-cache-${config_hash}.json"
-  PREPAID_CACHE="/tmp/claude/statusline-prepaid-cache-${config_hash}.json"
-  mkdir -p /tmp/claude
+  USAGE_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json"
+  PREPAID_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-prepaid.json"
   cat > "$USAGE_CACHE" <<'EOF'
 {"five_hour":{"utilization":62,"resets_at":"2099-01-01T00:00:00Z"},"seven_day":{"utilization":31,"resets_at":"2099-01-02T00:00:00Z"},"extra_usage":{"is_enabled":true,"used_credits":350}}
 EOF
@@ -31,8 +29,6 @@ EOF
 }
 
 teardown() {
-  rm -f "$USAGE_CACHE" "$PREPAID_CACHE" 2>/dev/null
-  rm -rf "/tmp/claude/statusline-sessions-${config_hash}" 2>/dev/null
   [ -n "$CLAUDE_CONFIG_DIR" ] && [ -d "$CLAUDE_CONFIG_DIR" ] && rm -rf "$CLAUDE_CONFIG_DIR"
 }
 
@@ -49,7 +45,7 @@ render() {
 
 @test "without hyperlink support the output is link-free (Terminal.app sees no garbage)" {
   out=$(printf '%s' "$STDIN" \
-    | CLAUDEFUEL_OFFLINE=1 TERM_PROGRAM=Apple_Terminal TERM=xterm-256color "$STATUSLINE")
+    | FORCE_HYPERLINK= CLAUDEFUEL_OFFLINE=1 TERM_PROGRAM=Apple_Terminal TERM=xterm-256color "$STATUSLINE")
   [[ "$(printf '%b' "$out")" != *"${OSC8}"* ]]
 }
 

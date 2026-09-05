@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 # Tests for shared-window session attribution: per-session heartbeat
-# files in /tmp/claude/statusline-sessions<suffix>/, the `⧉ N` Line-2
+# files in $CLAUDE_CONFIG_DIR/cache/claudefuel-sessions/, the `⧉ N` Line-2
 # chip when more than one live session draws on the account window, and
 # the sessions count in --fleet.
 
@@ -17,17 +17,13 @@ setup() {
   printf '{"upstream_version":"%s"}\n' "$installed_version" \
     > "$CLAUDE_CONFIG_DIR/cache/claudefuel-version.json"
 
-  config_hash=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-  SESSIONS_DIR="/tmp/claude/statusline-sessions-${config_hash}"
-  USAGE_CACHE="/tmp/claude/statusline-usage-cache-${config_hash}.json"
-  mkdir -p /tmp/claude
+  SESSIONS_DIR="$CLAUDE_CONFIG_DIR/cache/claudefuel-sessions"
+  USAGE_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json"
 
   NOW=1751500000
 }
 
 teardown() {
-  rm -rf "$SESSIONS_DIR" 2>/dev/null
-  rm -f "$USAGE_CACHE" 2>/dev/null
   [ -n "$CLAUDE_CONFIG_DIR" ] && [ -d "$CLAUDE_CONFIG_DIR" ] && rm -rf "$CLAUDE_CONFIG_DIR"
 }
 
@@ -80,7 +76,7 @@ render_as() {
 @test "session ids are sanitized before touching the filesystem" {
   render_as '../../../etc/passwd' >/dev/null
   # Nothing escapes the heartbeat dir; the sanitized name stays inside.
-  [ ! -e "/tmp/claude/etc/passwd" ]
+  [ ! -e "$CLAUDE_CONFIG_DIR/cache/etc/passwd" ]
   found=$(find "$SESSIONS_DIR" -type f | wc -l | tr -d ' ')
   [ "$found" -eq 1 ]
 }

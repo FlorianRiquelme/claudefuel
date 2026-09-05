@@ -48,24 +48,20 @@ line2_for() {
 @test "projection dormant below the yellow threshold landing" {
   # 30% at 2.5h elapsed → lands at 60, under yellow 70 → dormant.
   # (extra spend keeps lines 2-3 from calm-collapsing)
-  usage_hash=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
   printf '{"extra_usage":{"is_enabled":true,"used_credits":10}}' \
-    > "/tmp/claude/statusline-usage-cache-${usage_hash}.json"
+    > "$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json"
   printf '{"amount":100,"currency":"USD"}' \
-    > "/tmp/claude/statusline-prepaid-cache-${usage_hash}.json"
+    > "$CLAUDE_CONFIG_DIR/cache/claudefuel-prepaid.json"
 
   line2=$(line2_for 30 9000)
   [[ "$line2" == *"30%"* ]]
   [[ "$line2" != *"→"* ]]
-
-  rm -f "/tmp/claude/statusline-usage-cache-${usage_hash}.json" \
-    "/tmp/claude/statusline-prepaid-cache-${usage_hash}.json"
 }
 
 @test "projection dormant when burning hot — the burn chip owns that story" {
-  # 50% at 2h elapsed (ratio 1.25): burn chip fires, no →.
+  # 50% at 2h elapsed (ratio exactly 1.25, rounds half-up to ×1.3): burn chip fires, no →.
   line2=$(line2_for 50 10800)
-  [[ "$line2" == *"×1.2"* ]]
+  [[ "$line2" == *"×1.3"* ]]
   [[ "$line2" != *"→"* ]]
 }
 
@@ -111,9 +107,7 @@ line2_for() {
 }
 
 @test "--snapshot derives projected_pct_at_reset" {
-  config_hash=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-  USAGE_CACHE="/tmp/claude/statusline-usage-cache-${config_hash}.json"
-  mkdir -p /tmp/claude
+  USAGE_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json"
   reset_iso=$(date -u -r "$(( $(date +%s) + 5400 ))" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
     || date -u -d "@$(( $(date +%s) + 5400 ))" +"%Y-%m-%dT%H:%M:%SZ")
   printf '{"five_hour":{"utilization":62,"resets_at":"%s"},"seven_day":{"utilization":31,"resets_at":"2099-01-01T00:00:00Z"}}' \
@@ -122,6 +116,4 @@ line2_for() {
   snap=$("$STATUSLINE" --snapshot)
   proj=$(echo "$snap" | jq -r '.derived.five_hour.projected_pct_at_reset')
   [ "$proj" -ge 87 ] && [ "$proj" -le 89 ]
-
-  rm -f "$USAGE_CACHE"
 }

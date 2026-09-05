@@ -2,38 +2,50 @@
 # claudefuel: v0.4.6
 # Claude Code Status Line — Multi-Account Aware
 #
-# Line 1: [profile] Model | ◈ session | ctx <bar> <used>/<total> | thinking: on/off | effort: <level> | agent: <name> | ▸ <tool> <age> | ↗ /claudefuel.update
-# Line 2: 5h: <bar> % [·age] (or ~<left> ×<ratio> when burning hot) | 7d: <bar> % | extra: <currency><balance> [·age] | ⇄ <profile> <pct>% (<age>)
-# Line 3: ↻ <time> · ~cap <range> · slow ≤<ratio>× · ⚓ <gap> | ↻ <datetime> | ↻ <date>
+# Line 1: [profile] Model | ◈ session | ctx <bar> <used>/<total> | thinking: on/off | effort: <level> | agent: <name> | ▸ <tool> <age> | #N ◌ | ↗ /claudefuel.update
+# Line 2: 5h: <bar> % [→N%] [·age] (or ~<left> ×<ratio> when burning hot) | 7d: <bar> % | extra: <currency><balance> [·age] | ⧉ N | ⇄ <profile> <pct>% (<age>)
+# Line 3: ↻ <time> · ~cap <range> · slow ≤<ratio>× · ⚓ <gap> | ↻ <datetime>
+#
+# Data sources, in order of preference:
+#   1. stdin `rate_limits` — Claude Code passes 5h/7d used_percentage and
+#      resets_at (epoch) on every render for Pro/Max subscribers. Zero
+#      network, per-render fresh, always in agreement with Claude Code's own
+#      UI. Absent before a session's first API response and for
+#      non-subscription auth. Each render mirrors it to
+#      cache/claudefuel-native.json so --snapshot, --fleet and the ⇄ switch
+#      hint read the same numbers the bar shows.
+#   2. The OAuth usage endpoint — fallback for the bars when stdin carries
+#      no rate_limits, and enrichment for the prepaid `extra` column. Cached
+#      on disk, fetched by at most one session per cadence via a detached
+#      one-shot refresh (never-block: a stale cache paints this render, the
+#      refresh lands for the next). 5 min cadence on the fallback path,
+#      30 min when stdin already drives the bars.
 #
 # Honest instrument: ·age marks stale cached data (never rendered as fresh);
-# when no usage data is available, line 2 becomes a one-glyph diagnosis plus
-# trailhead: <⊘|⚠|?> ✚ /claudefuel.doctor (auth / network / missing dep).
+# when no usage data is available at all, line 2 becomes a one-glyph
+# diagnosis plus trailhead: <⊘|⚠|?> ✚ /claudefuel.doctor (auth / network /
+# missing dep). Lines 2-3 always render once data exists. Severity rides on
+# shape and weight, not hue alone: a window at ≥90% gets a ⚠ label prefix
+# and inverse-video value; the governing constraint — whichever window
+# would hit 100% first at the current burn rate — carries a ▸ marker
+# (stable layout, never reordered). The extra column renders only once
+# spend is live (>$0).
 #
-# Calm cockpit (earn-your-pixels): Lines 2-3 collapse entirely when all
-# windows are nominal — 5h and 7d below 50% (the first alarm threshold),
-# no window projected to hit 100% before its own reset, no live spend on
-# extra, and no severe-staleness warning pending. Line 1 always renders.
-# When a window crosses 90% its column escalates with shape/weight (⚠
-# label prefix, inverse-video pct), not hue alone. The governing
-# constraint — whichever window would hit 100% first at the current burn
-# rate — carries a ▸ marker (stable layout, no reordering). The extra
-# column renders only once spend is live (>$0).
+# Credentials are read-only: the script never refreshes or rewrites the
+# OAuth token. An expired token means "no fetch this render" — Claude Code
+# refreshes it on its next API call.
 #
-# Native-first data: Claude Code ≥2.1.x passes rate_limits on stdin
-# (five_hour/seven_day used_percentage + resets_at epoch). When present it
-# is the source of truth for the 5h/7d bars and Line-3 reset times —
-# per-render fresh (no age marker by construction), zero network, always
-# in agreement with Claude Code's own UI. The OAuth fetch path remains as
-# enrichment (prepaid `extra` balance, sibling caches for
-# /claudefuel.fleet) and as the full fallback when the field is absent
-# (older Claude Code, non-subscription auth).
-#
-# Supports CLAUDE_CONFIG_DIR for per-account usage display.
-# When CLAUDE_CONFIG_DIR is set, keychain lookups and cache files are isolated per account.
+# Supports CLAUDE_CONFIG_DIR for per-account display. All runtime files live
+# in $CLAUDE_CONFIG_DIR/cache/claudefuel-* (default ~/.claude/cache/), so
+# profiles are isolated by directory and nothing is shared through /tmp.
 #
 # User config: ~/.claude/claudefuel.json (or $CLAUDE_CONFIG_DIR/claudefuel.json),
 # edited via /claudefuel.configure. Minor tweaks only — see ADR-0003.
+#
+# Env: CLAUDEFUEL_OFFLINE=1 skips every network call. CLAUDEFUEL_NOW=<epoch>
+# freezes the clock (tests, demos). CLAUDE_CODE_OAUTH_TOKEN overrides
+# credential lookup. COLUMNS (set by Claude Code) drives the narrow-width
+# degradation ladder.
 #
 # Cross-platform: macOS (Keychain), Linux (credentials file, GNOME Keyring)
 # Dependencies: jq, curl
@@ -48,67 +60,114 @@ set -o pipefail # `a | b || c` must reflect a's failure, not b's success.
 # Injectable clock: CLAUDEFUEL_NOW=<epoch> freezes "now" for every
 # time-derived value (countdowns, cap-ETA math, cache ages) — the
 # determinism seam behind timer-tick tests and demo golden renders.
-# Unset (the only production state) reads the wall clock.
-cf_now() {
-    printf '%s' "${CLAUDEFUEL_NOW:-$(date +%s)}"
+# Read once per render: every helper below uses $now, never date(1).
+now="${CLAUDEFUEL_NOW:-$(date +%s)}"
+
+# Runtime paths. Every file the bar writes lives under the active profile's
+# cache dir, prefixed claudefuel-, so profiles never share state and a
+# multi-user /tmp cannot break the bar.
+config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+cache_dir="$config_dir/cache"
+
+# date(1) flavor, detected once: BSD (macOS) takes -j -r <epoch>, GNU takes
+# -d @<epoch>. One exec per formatted time instead of a failing BSD attempt
+# followed by the GNU fallback on every call.
+if date -j -r 0 +%s >/dev/null 2>&1; then
+    date_flavor=bsd
+    cf_date() { date -j -r "$1" +"$2" 2>/dev/null; }
+else
+    date_flavor=gnu
+    cf_date() { date -d "@$1" +"$2" 2>/dev/null; }
+fi
+
+# Installed version from this file's own header (first 20 lines), read
+# with builtins — no head/grep/sed. Empty when the header is missing.
+installed_version=""
+{
+    _cf_n=0
+    while IFS= read -r _cf_line && [ "$_cf_n" -lt 20 ]; do
+        _cf_n=$(( _cf_n + 1 ))
+        case "$_cf_line" in
+            "# claudefuel: v"*) installed_version="${_cf_line#\# claudefuel: v}"; break ;;
+        esac
+    done < "${BASH_SOURCE[0]:-$0}"
+} 2>/dev/null
+
+# Profile label: basename of CLAUDE_CONFIG_DIR minus the .claude- prefix
+# ("default" when unset). Pure parameter expansion.
+profile_label_for_dir() {
+    local d="${1%/}"
+    if [ -z "$d" ] || [ "$d" = "$HOME/.claude" ]; then printf 'default'; return; fi
+    d="${d##*/}"
+    printf '%s' "${d#.claude-}"
 }
 
-# Cross-platform ISO to epoch conversion
-# Converts ISO 8601 timestamp (e.g. "2025-06-15T12:30:00Z" or "2025-06-15T12:30:00.123+00:00") to epoch seconds.
-# Properly handles UTC timestamps and converts to local time.
+# The drift cache is a one-key JSON object written by this script; read it
+# with a bash regex (no jq spawn). Echoes the version or nothing.
+read_upstream_version() {
+    local content
+    [ -f "$1" ] && content=$(<"$1") || return 0
+    [[ "$content" =~ \"upstream_version\":\"([^\"]+)\" ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# mtime of a file or directory in epoch seconds.
+file_mtime() {
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
+}
+
+# Cross-platform ISO 8601 → epoch seconds ("2025-06-15T12:30:00Z",
+# "2025-06-15T12:30:00.123+00:00"). A bare digit string (an epoch, as the
+# stdin rate_limits and the native mirror carry) passes through untouched.
 iso_to_epoch() {
     local iso_str="$1"
+    [ -n "$iso_str" ] && [ "$iso_str" != "null" ] || return 1
+    case "$iso_str" in
+        *[!0-9]*) ;;
+        *) printf '%s' "$iso_str"; return 0 ;;
+    esac
 
-    # Try GNU date first (Linux) — handles ISO 8601 format automatically
     local epoch
-    epoch=$(date -d "${iso_str}" +%s 2>/dev/null)
-    if [ -n "$epoch" ]; then
-        echo "$epoch"
-        return 0
-    fi
-
-    # BSD date (macOS) - handle various ISO 8601 formats
-    local stripped="${iso_str%%.*}"          # Remove fractional seconds (.123456)
-    stripped="${stripped%%Z}"                 # Remove trailing Z
-    stripped="${stripped%%+*}"                # Remove timezone offset (+00:00)
-    stripped="${stripped%%-[0-9][0-9]:[0-9][0-9]}"  # Remove negative timezone offset
-
-    # Check if timestamp is UTC (has Z or +00:00 or -00:00)
-    if [[ "$iso_str" == *"Z"* ]] || [[ "$iso_str" == *"+00:00"* ]] || [[ "$iso_str" == *"-00:00"* ]]; then
-        # For UTC timestamps, parse with timezone set to UTC
-        epoch=$(env TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
+    if [ "$date_flavor" = gnu ]; then
+        epoch=$(date -d "${iso_str}" +%s 2>/dev/null)
     else
-        epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
+        # BSD date needs a fixed layout: strip fractional seconds and offset.
+        local stripped="${iso_str%%.*}"
+        stripped="${stripped%%Z}"
+        stripped="${stripped%%+*}"
+        stripped="${stripped%%-[0-9][0-9]:[0-9][0-9]}"
+        if [[ "$iso_str" == *"Z"* ]] || [[ "$iso_str" == *"+00:00"* ]] || [[ "$iso_str" == *"-00:00"* ]]; then
+            epoch=$(env TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
+        else
+            epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
+        fi
     fi
-
-    if [ -n "$epoch" ]; then
-        echo "$epoch"
-        return 0
-    fi
-
-    return 1
+    [ -n "$epoch" ] || return 1
+    printf '%s' "$epoch"
 }
 
 # ===== Cross-profile sibling caches (read-only) =====
-# Every profile that has rendered recently leaves a usage cache in
-# /tmp/claude, keyed by the same sha256-of-CLAUDE_CONFIG_DIR suffix the
-# credential section below derives (CACHE_SUFFIX). These helpers read
-# those sibling caches and nothing else — they never fetch for a
-# non-active profile (multi-source fanout is an ADR-0003 rewrite cliff).
-# Sibling data is always a snapshot of unknown freshness, so its cache
-# age travels with it everywhere it is shown.
+# Every profile that has rendered recently leaves usage data in its own
+# cache dir: claudefuel-native.json (mirrored from stdin rate_limits on
+# every render) and/or claudefuel-usage.json (the OAuth fetch). These
+# helpers read those sibling files and nothing else — they never fetch for
+# a non-active profile (multi-source fanout is an ADR-0003 rewrite cliff).
+# Sibling data is always a snapshot of unknown freshness, so its cache age
+# travels with it everywhere it is shown.
 
-# Usage-cache path for a profile dir. The default profile (~/.claude,
-# or CLAUDE_CONFIG_DIR unset) uses the suffixless cache; everything
-# else mirrors the CACHE_SUFFIX derivation below.
-claudefuel_cache_path_for_dir() {
-    local dir="$1"
-    if [ -z "$dir" ] || [ "$dir" = "$HOME/.claude" ]; then
-        printf '/tmp/claude/statusline-usage-cache.json'
-    else
-        local h
-        h=$(echo -n "$dir" | shasum -a 256 | cut -c1-8)
-        printf '/tmp/claude/statusline-usage-cache-%s.json' "$h"
+# Freshest usage file for a profile dir, or nothing. Both files share the
+# same shape ({five_hour,seven_day}.{utilization,resets_at}); the native
+# mirror is preferred whenever it is at least as new as the OAuth cache.
+# Usage: claudefuel_usage_file_for_dir <profile_dir>
+claudefuel_usage_file_for_dir() {
+    local dir="${1:-$HOME/.claude}"
+    local native="$dir/cache/claudefuel-native.json" oauth="$dir/cache/claudefuel-usage.json"
+    local nm om
+    [ -f "$native" ] && nm=$(file_mtime "$native")
+    [ -f "$oauth" ] && om=$(file_mtime "$oauth")
+    if [ -n "$nm" ] && [ "${nm:-0}" -ge "${om:-0}" ]; then
+        printf '%s' "$native"
+    elif [ -n "$om" ]; then
+        printf '%s' "$oauth"
     fi
 }
 
@@ -126,28 +185,23 @@ claudefuel_format_age() {
 # ~/.claude-* sibling, and the active CLAUDE_CONFIG_DIR when it lives
 # outside that convention. Profile labels derive the same way as the
 # [profile] segment on Line 1 (basename minus the .claude- prefix).
-# Emits one line per cache found: <label>\t<cache_file>\t<age_seconds>
+# Emits one line per cache found: <label>\t<profile_dir>\t<usage_file>\t<age_seconds>
 claudefuel_known_profile_caches() {
-    local now seen="" dir label cache mtime age
-    now=$(cf_now)
+    local seen="" dir label cache mtime age
     set +f  # sibling scan needs globbing; restored immediately
     local dirs=( "$HOME/.claude" "$HOME"/.claude-* )
     set -f
     [ -n "$CLAUDE_CONFIG_DIR" ] && dirs+=( "$CLAUDE_CONFIG_DIR" )
     for dir in "${dirs[@]}"; do
         [ -d "$dir" ] || continue
-        cache=$(claudefuel_cache_path_for_dir "$dir")
-        case "$seen" in *"|$cache|"*) continue ;; esac
-        seen+="|$cache|"
-        [ -f "$cache" ] || continue
-        if [ "$dir" = "$HOME/.claude" ]; then
-            label="default"
-        else
-            label=$(basename "$dir" | sed 's/^\.claude-//')
-        fi
-        mtime=$(stat -c %Y "$cache" 2>/dev/null || stat -f %m "$cache" 2>/dev/null)
+        case "$seen" in *"|$dir|"*) continue ;; esac
+        seen+="|$dir|"
+        cache=$(claudefuel_usage_file_for_dir "$dir")
+        [ -n "$cache" ] || continue
+        label=$(profile_label_for_dir "$dir")
+        mtime=$(file_mtime "$cache")
         age=$(( now - ${mtime:-$now} ))
-        printf '%s\t%s\t%s\n' "$label" "$cache" "$age"
+        printf '%s\t%s\t%s\t%s\n' "$label" "$dir" "$cache" "$age"
     done
 }
 
@@ -159,21 +213,21 @@ claudefuel_known_profile_caches() {
 #   2. sibling cache fresher than 6h — a 5h-window number older than
 #      its own window says nothing about the sibling's current state
 #   3. best sibling governing pct <= active - 20 (meaningful headroom)
-# Usage: claudefuel_switch_hint <active_governing_pct> <active_cache_file>
+# Usage: claudefuel_switch_hint <active_governing_pct> <active_profile_dir>
 claudefuel_switch_hint() {
     # Demo renders never read the user's real sibling caches.
     [ -n "$demo_state" ] && return 0
-    local active_pct=$1 active_cache=$2
+    local active_pct=$1 active_dir=$2
     [ "$active_pct" -ge 80 ] 2>/dev/null || return 0
 
-    local label cache age sib_pct
+    local label dir cache age sib_pct
     local best_label="" best_pct=101 best_age=0
-    while IFS=$'\t' read -r label cache age; do
-        [ "$cache" = "$active_cache" ] && continue
+    while IFS=$'\t' read -r label dir cache age; do
+        [ "$dir" = "$active_dir" ] && continue
         [ "$age" -lt $((6 * 3600)) ] || continue
-        sib_pct=$(jq -r '[(.five_hour.utilization // 0), (.seven_day.utilization // 0)] | max' \
-            "$cache" 2>/dev/null | awk '{printf "%.0f", $1}')
-        [ -n "$sib_pct" ] || continue
+        sib_pct=$(jq -r '[(.five_hour.utilization // 0), (.seven_day.utilization // 0)] | max | round' \
+            "$cache" 2>/dev/null)
+        case "$sib_pct" in ''|*[!0-9]*) continue ;; esac
         if [ "$sib_pct" -lt "$best_pct" ]; then
             best_pct=$sib_pct best_label=$label best_age=$age
         fi
@@ -186,23 +240,22 @@ claudefuel_switch_hint() {
 }
 
 # ===== Shared-window session heartbeats =====
-# Every render touches /tmp/claude/statusline-sessions<suffix>/s-<id>,
-# so the sessions sharing one account window (the documented real-world
-# confusion behind "usage stale / bar red") become countable. A
-# heartbeat fresher than 5 minutes = a live session on this window.
+# Every render touches <profile>/cache/claudefuel-sessions/s-<id>, so the
+# sessions sharing one account window (the documented real-world confusion
+# behind "usage stale / bar red") become countable. A heartbeat fresher
+# than 5 minutes = a live session on this window.
 # Usage: claudefuel_session_count <sessions_dir> [prune]
 # Echoes the fresh count; with "prune", also removes expired heartbeats
 # (the render path prunes; --fleet stays a pure read).
 claudefuel_session_count() {
     local dir="$1" mode="${2:-}"
     [ -d "$dir" ] || { echo 0; return; }
-    local now count f m
-    now=$(cf_now)
+    local count f m
     count=0
     set +f  # heartbeat scan needs globbing; restored immediately
     for f in "$dir"/*; do
         [ -f "$f" ] || continue
-        m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
+        m=$(file_mtime "$f")
         if [ -n "$m" ] && [ $(( now - m )) -lt 300 ]; then
             count=$(( count + 1 ))
         elif [ "$mode" = "prune" ]; then
@@ -341,22 +394,22 @@ claudefuel_config_report() {
 # and exits — the data surface for the /claudefuel.fleet skill. Strictly
 # read-only: renders only what's already on disk, never fetches, and
 # always carries cache_age_seconds so the renderer can show staleness.
+# resets_at is an ISO string from the OAuth cache or an epoch number from
+# the native mirror; consumers must accept both.
 if [ "$1" = "--fleet" ]; then
-    while IFS=$'\t' read -r label cache age; do
-        # Join the profile's prepaid cache when present (same suffix).
-        suffix="${cache#/tmp/claude/statusline-usage-cache}"
-        suffix="${suffix%.json}"
-        prepaid_file="/tmp/claude/statusline-prepaid-cache${suffix}.json"
+    while IFS=$'\t' read -r label dir cache age; do
+        prepaid_file="$dir/cache/claudefuel-prepaid.json"
         prepaid_json="null"
         if [ -f "$prepaid_file" ]; then
             prepaid_json=$(jq -c '{amount: (.amount // null), currency: (.currency // null)}' \
                 "$prepaid_file" 2>/dev/null)
             [ -n "$prepaid_json" ] || prepaid_json="null"
         fi
-        sessions=$(claudefuel_session_count "/tmp/claude/statusline-sessions${suffix}")
+        sessions=$(claudefuel_session_count "$dir/cache/claudefuel-sessions")
         jq -c --arg profile "$label" --argjson age "$age" --argjson prepaid "$prepaid_json" \
             --argjson sessions "$sessions" \
             '{profile: $profile, cache_age_seconds: $age, sessions: $sessions,
+              source: (.source // "oauth"),
               five_hour: (.five_hour // null), seven_day: (.seven_day // null),
               extra_usage: (.extra_usage // null), prepaid: $prepaid}' \
             "$cache" 2>/dev/null
@@ -371,25 +424,25 @@ fi
 # display stays dumb; the running LLM session does the explaining.
 # Schema is versioned via .schema.version; breaking field changes bump it.
 if [ "${1:-}" = "--snapshot" ]; then
-    snapshot_now=$(cf_now)
+    snapshot_now=$now
 
-    snapshot_suffix=""
-    snapshot_profile="default"
-    if [ -n "$CLAUDE_CONFIG_DIR" ]; then
-        snapshot_hash=$(echo -n "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-        snapshot_suffix="-${snapshot_hash}"
-        snapshot_profile=$(basename "$CLAUDE_CONFIG_DIR" | sed 's/^\.claude-//')
-    fi
+    snapshot_profile=$(profile_label_for_dir "$CLAUDE_CONFIG_DIR")
 
-    snapshot_usage_path="/tmp/claude/statusline-usage-cache${snapshot_suffix}.json"
-    snapshot_prepaid_path="/tmp/claude/statusline-prepaid-cache${snapshot_suffix}.json"
-    snapshot_version_path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cache/claudefuel-version.json"
+    # Provenance follows the bar: the native mirror (stdin rate_limits,
+    # written every render) wins over the OAuth cache whenever it is at
+    # least as fresh, so /claudefuel.why explains the numbers on screen.
+    snapshot_usage_path=$(claudefuel_usage_file_for_dir "$config_dir")
+    [ -n "$snapshot_usage_path" ] || snapshot_usage_path="$cache_dir/claudefuel-usage.json"
+    snapshot_usage_ttl=300
+    case "$snapshot_usage_path" in *claudefuel-native.json) snapshot_usage_ttl=2 ;; esac
+    snapshot_prepaid_path="$cache_dir/claudefuel-prepaid.json"
+    snapshot_version_path="$cache_dir/claudefuel-version.json"
 
     # Age of a file in seconds, or the literal string "null" when absent.
     snapshot_age() {
         [ -f "$1" ] || { echo "null"; return; }
         local m
-        m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)
+        m=$(file_mtime "$1")
         [ -z "$m" ] && { echo "null"; return; }
         echo $(( snapshot_now - m ))
     }
@@ -402,10 +455,8 @@ if [ "${1:-}" = "--snapshot" ]; then
         echo "$j"
     }
 
-    snapshot_installed=$(head -20 "${BASH_SOURCE[0]:-$0}" \
-        | grep -E '^# claudefuel:' | head -n1 \
-        | sed -E 's/^# claudefuel: v//')
-    snapshot_upstream=$(jq -r '.upstream_version // empty' "$snapshot_version_path" 2>/dev/null)
+    snapshot_installed=$installed_version
+    snapshot_upstream=$(read_upstream_version "$snapshot_version_path")
 
     # v2: the config block — path, parse status, effective values,
     # overridden keys — so /claudefuel.why can explain config-driven
@@ -423,6 +474,7 @@ if [ "${1:-}" = "--snapshot" ]; then
         --arg installed "${snapshot_installed:-}" \
         --arg upstream "${snapshot_upstream:-}" \
         --arg usage_path "$snapshot_usage_path" \
+        --argjson usage_ttl "$snapshot_usage_ttl" \
         --arg prepaid_path "$snapshot_prepaid_path" \
         --arg version_path "$snapshot_version_path" \
         --argjson usage "$(snapshot_json "$snapshot_usage_path")" \
@@ -433,6 +485,7 @@ if [ "${1:-}" = "--snapshot" ]; then
         '
         def iso2epoch:
           if . == null or . == "" then null
+          elif type == "number" then floor
           else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")
                 | try (strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch null)
           end;
@@ -475,8 +528,9 @@ if [ "${1:-}" = "--snapshot" ]; then
             caches: {
               usage: {
                 path: $usage_path, present: ($usage != null),
-                age_seconds: $usage_age, ttl_seconds: 60,
-                fresh: ($usage_age != null and $usage_age < 60)
+                source: ($usage.source // "oauth"),
+                age_seconds: $usage_age, ttl_seconds: $usage_ttl,
+                fresh: ($usage_age != null and $usage_age < $usage_ttl)
               },
               prepaid: {
                 path: $prepaid_path, present: ($prepaid != null),
@@ -549,7 +603,7 @@ if [ "${1:-}" = "--subagent" ]; then
     command -v jq >/dev/null 2>&1 || exit 0
     sub_input=$(cat)
     [ -n "$sub_input" ] || exit 0
-    printf '%s' "$sub_input" | jq -c --argjson now "$(cf_now)" '
+    printf '%s' "$sub_input" | jq -c --argjson now "$now" '
         def tokfmt: if . >= 1000000 then "\(. / 100000 | floor / 10)m"
           elif . >= 1000 then "\(. / 1000 | round)k" else tostring end;
         def agefmt: if . < 60 then "\(.)s" elif . < 3600 then "\(. / 60 | floor)m"
@@ -607,6 +661,7 @@ if [ "${1:-}" = "--demo" ]; then
             ;;
     esac
     CLAUDEFUEL_NOW=$demo_now
+    now=$demo_now
     CLAUDEFUEL_OFFLINE=1
     # Demo output is captured as text by the configure skill's preview
     # loop — OSC 8 sequences would read as garbage there, and byte-
@@ -755,7 +810,9 @@ if [ "$term_cols" -gt 0 ]; then
         cfg_hide="$cfg_hide effort"
         thinking_label="think:"
     fi
-    [ "$term_cols" -le 80 ] && cfg_hide="$cfg_hide extra"
+    # ≤80: lines 2/3 are the longest once any chip fires — drop the extra
+    # column, the ⧉ session count, the →N% projection and the ⇄ hint.
+    [ "$term_cols" -le 80 ] && cfg_hide="$cfg_hide extra sessions projection"
     if [ "$term_cols" -le 60 ]; then
         cfg_hide="$cfg_hide thinking"
         line1_bar_width=5
@@ -817,13 +874,14 @@ severity_color() {
 
 # Format token counts (e.g., 50k / 200k)
 format_tokens() {
-    local num=$1
+    local num=$1 r
     if [ "$num" -ge 1000000 ]; then
-        awk "BEGIN {printf \"%.1fm\", $num / 1000000}"
+        r=$(( (num + 50000) / 100000 ))        # tenths of a million, rounded
+        printf '%d.%dm' $(( r / 10 )) $(( r % 10 ))
     elif [ "$num" -ge 1000 ]; then
-        awk "BEGIN {printf \"%.0fk\", $num / 1000}"
+        printf '%dk' $(( (num + 500) / 1000 ))
     else
-        printf "%d" "$num"
+        printf '%d' "$num"
     fi
 }
 
@@ -849,48 +907,46 @@ build_bar() {
     printf "${bar_color}${filled_str}${dim}${empty_str}${reset}"
 }
 
-# ===== Extract data from JSON =====
-model_name=$(echo "$input" | jq -r '.model.display_name // "Claude"')
+# ===== Extract data from JSON — one jq pass =====
+# Every stdin field the bar uses, in one process. Fields are joined with
+# the ASCII unit separator so empty values survive `read` (tabs collapse).
+IFS=$'\x1f' read -r model_name size input_tokens cache_create cache_read \
+    thinking_val effort_level session_id session_name agent_name transcript_path \
+    pr_number pr_url pr_state rl_5h_pct rl_5h_reset rl_7d_pct rl_7d_reset \
+    <<<"$(printf '%s' "$input" | jq -r '[
+        (.model.display_name // "Claude"),
+        (.context_window.context_window_size // 200000),
+        (.context_window.current_usage.input_tokens // 0),
+        (.context_window.current_usage.cache_creation_input_tokens // 0),
+        (.context_window.current_usage.cache_read_input_tokens // 0),
+        (.thinking.enabled // false),
+        (.effort.level // ""),
+        (.session_id // ""),
+        (.session_name // ""),
+        (.agent.name // ""),
+        (.transcript_path // ""),
+        (.pr.number // ""),
+        (.pr.url // ""),
+        (.pr.review_state // ""),
+        (.rate_limits.five_hour.used_percentage // "" | if type == "number" then round else . end),
+        (.rate_limits.five_hour.resets_at // "" | if type == "number" then floor else . end),
+        (.rate_limits.seven_day.used_percentage // "" | if type == "number" then round else . end),
+        (.rate_limits.seven_day.resets_at // "" | if type == "number" then floor else . end)
+    ] | map(tostring) | join("\u001f")' 2>/dev/null)"
 
+model_name=${model_name:-Claude}
 # Context window
-size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
-[ "$size" -eq 0 ] 2>/dev/null && size=200000
-
-# Token usage
-input_tokens=$(echo "$input" | jq -r '.context_window.current_usage.input_tokens // 0')
-cache_create=$(echo "$input" | jq -r '.context_window.current_usage.cache_creation_input_tokens // 0')
-cache_read=$(echo "$input" | jq -r '.context_window.current_usage.cache_read_input_tokens // 0')
+[ "$size" -gt 0 ] 2>/dev/null || size=200000
+: "${input_tokens:=0}" "${cache_create:=0}" "${cache_read:=0}"
 current=$(( input_tokens + cache_create + cache_read ))
+used_tokens=$(format_tokens "$current")
+total_tokens=$(format_tokens "$size")
+pct_used=$(( current * 100 / size ))
 
-used_tokens=$(format_tokens $current)
-total_tokens=$(format_tokens $size)
-
-if [ "$size" -gt 0 ]; then
-    pct_used=$(( current * 100 / size ))
-else
-    pct_used=0
-fi
-
-# Check thinking status (live session state from stdin — reflects Option+T toggle)
+# Thinking (reflects Option+T) and reasoning effort (reflects /effort;
+# absent when the model has no effort parameter) — live session state.
 thinking_on=false
-thinking_val=$(echo "$input" | jq -r '.thinking.enabled // false')
 [ "$thinking_val" = "true" ] && thinking_on=true
-
-# Reasoning effort level (live session state from stdin — reflects /effort changes).
-# Absent when the current model does not support the effort parameter.
-effort_level=$(echo "$input" | jq -r '.effort.level // empty')
-
-# The "Now" layer inputs: session identity, subagent context, and the
-# transcript path for the live-activity segment. All conditional fields.
-session_id=$(echo "$input" | jq -r '.session_id // empty')
-session_name=$(echo "$input" | jq -r '.session_name // empty')
-agent_name=$(echo "$input" | jq -r '.agent.name // empty')
-transcript_path=$(echo "$input" | jq -r '.transcript_path // empty')
-
-# PR context for the clickable #N chip (conditional; v2.1.145+).
-pr_number=$(echo "$input" | jq -r '.pr.number // empty')
-pr_url=$(echo "$input" | jq -r '.pr.url // empty')
-pr_state=$(echo "$input" | jq -r '.pr.review_state // empty')
 
 # ===== Native-first usage source (stdin rate_limits) =====
 # Conditional field (older Claude Code and non-subscription auth omit it)
@@ -900,15 +956,8 @@ pr_state=$(echo "$input" | jq -r '.pr.review_state // empty')
 # resets_at is a unix epoch. Values are validated here and derived in
 # the window-snapshot block before the column loop.
 usage_source="oauth"
-rl_vals=$(echo "$input" | jq -r '[
-    (.rate_limits.five_hour.used_percentage // ""),
-    (.rate_limits.five_hour.resets_at // ""),
-    (.rate_limits.seven_day.used_percentage // ""),
-    (.rate_limits.seven_day.resets_at // "")
-  ] | @tsv' 2>/dev/null)
-IFS=$'\t' read -r rl_5h_pct rl_5h_reset rl_7d_pct rl_7d_reset <<< "$rl_vals"
-case "$rl_5h_pct" in ''|*[!0-9.]*) rl_5h_pct="" ;; esac
-case "$rl_7d_pct" in ''|*[!0-9.]*) rl_7d_pct="" ;; esac
+case "$rl_5h_pct" in ''|*[!0-9]*) rl_5h_pct="" ;; esac
+case "$rl_7d_pct" in ''|*[!0-9]*) rl_7d_pct="" ;; esac
 [ -n "$rl_5h_pct" ] && [ -n "$rl_7d_pct" ] && usage_source="stdin"
 
 cf_timing_mark jq-parse
@@ -925,7 +974,7 @@ claudefuel_fetch_upstream_version() {
         | head -20 | grep -E '^# claudefuel:' | head -n1 \
         | sed -E 's/^# claudefuel: v//')
     if [ -n "$fresh" ]; then
-        mkdir -p "$cache_dir"
+        [ -d "$cache_dir" ] || mkdir -p "$cache_dir"
         printf '{"upstream_version":"%s"}\n' "$fresh" > "$cache_file.tmp.$$" \
             && mv "$cache_file.tmp.$$" "$cache_file"
         echo "$fresh"
@@ -944,30 +993,25 @@ claudefuel_fetch_upstream_version() {
 # only a missing cache fetches synchronously (first-ever render).
 # Set CLAUDEFUEL_OFFLINE=1 to skip any fetch.
 claudefuel_drift_segment() {
-    local cache_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cache"
     local cache_file="$cache_dir/claudefuel-version.json"
     local ttl_seconds=$((6 * 60 * 60))
 
-    local installed_version
-    installed_version=$(head -20 "${BASH_SOURCE[0]:-$0}" \
-        | grep -E '^# claudefuel:' | head -n1 \
-        | sed -E 's/^# claudefuel: v//')
-    [ -z "$installed_version" ] && return 0
+    drift_installed=$installed_version
+    [ -z "$drift_installed" ] && return 0
 
-    local upstream_version="" should_fetch=false
+    drift_upstream=""
+    local should_fetch=false
     if [ -f "$cache_file" ]; then
-        upstream_version=$(jq -r '.upstream_version // empty' "$cache_file" 2>/dev/null)
-        local cache_mtime now cache_age
-        cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
-        now=$(cf_now)
-        cache_age=$(( now - ${cache_mtime:-0} ))
-        [ "$cache_age" -ge "$ttl_seconds" ] && should_fetch=true
+        drift_upstream=$(read_upstream_version "$cache_file")
+        local cache_mtime
+        cache_mtime=$(file_mtime "$cache_file")
+        [ $(( now - ${cache_mtime:-0} )) -ge "$ttl_seconds" ] && should_fetch=true
     else
         should_fetch=true
     fi
 
     if $should_fetch && [ -z "$CLAUDEFUEL_OFFLINE" ]; then
-        if [ -n "$upstream_version" ]; then
+        if [ -n "$drift_upstream" ]; then
             # Stale value paints below; refresh lands for the next render.
             # touch claims the refresh so overlapping renders don't re-fire.
             touch "$cache_file"
@@ -976,19 +1020,19 @@ claudefuel_drift_segment() {
             disown
         else
             # First-ever render: nothing cached to paint, fetch synchronously.
-            upstream_version=$(claudefuel_fetch_upstream_version "$cache_dir" "$cache_file")
+            drift_upstream=$(claudefuel_fetch_upstream_version "$cache_dir" "$cache_file")
         fi
     fi
 
-    [ -z "$upstream_version" ] && return 0
-    [ "$upstream_version" = "$installed_version" ] && return 0
+    [ -z "$drift_upstream" ] && return 0
+    [ "$drift_upstream" = "$drift_installed" ] && return 0
 
     # Same sort -V algorithm as compare_versions in /claudefuel.update:
     # prompt only when upstream is strictly newer than installed.
     local lowest
-    lowest=$(printf '%s\n%s\n' "$installed_version" "$upstream_version" \
+    lowest=$(printf '%s\n%s\n' "$drift_installed" "$drift_upstream" \
         | sort -V | head -n1)
-    [ "$lowest" = "$upstream_version" ] && return 0
+    [ "$lowest" = "$drift_upstream" ] && return 0
 
     printf "↗ /claudefuel.update"
 }
@@ -1007,7 +1051,7 @@ segment_model() {
     local profile_label=""
     if [ -n "$CLAUDE_CONFIG_DIR" ] && ! segment_hidden profile; then
         local profile_name
-        profile_name=$(basename "$CLAUDE_CONFIG_DIR" | sed 's/^\.claude-//')
+        profile_name=$(profile_label_for_dir "$CLAUDE_CONFIG_DIR")
         profile_label="${yellow}[${profile_name}]${reset} "
     fi
     printf '%s' "${profile_label}${blue}${model_name}${reset}"
@@ -1040,13 +1084,17 @@ segment_effort() {
 # Color = hash of session_id into a fixed 5-hue palette (red excluded:
 # hue there means alarm). Pure stdin, zero cost.
 segment_session() {
-    local label="$session_name"
-    [ -n "$label" ] || label="${session_id:0:6}"
-    [ -n "$label" ] || return 0
+    # Renders only for a named session (--name or /rename): the bare
+    # session_id stem was six hex characters nobody could act on. Naming
+    # the session is the opt-in.
+    [ -n "$session_name" ] || return 0
     local palette=("$blue" "$cyan" "$green" "$yellow" "$orange")
-    local h
-    h=$(printf '%s' "${session_id:-$label}" | cksum | awk '{print $1}')
-    printf '%s' "${palette[$(( h % 5 ))]}◈ ${label}${reset}"
+    local h=0 i key="${session_id:-$session_name}"
+    for (( i=0; i<${#key} && i<32; i++ )); do
+        printf -v c '%d' "'${key:i:1}"
+        h=$(( h + c ))
+    done
+    printf '%s' "${palette[$(( h % 5 ))]}◈ ${session_name}${reset}"
 }
 
 # Subagent context — `agent: <name>` when this render belongs to a
@@ -1090,7 +1138,7 @@ segment_activity() {
         local epoch elapsed
         epoch=$(iso_to_epoch "$ts")
         if [ -n "$epoch" ]; then
-            elapsed=$(( $(cf_now) - epoch ))
+            elapsed=$(( now - epoch ))
             [ "$elapsed" -lt 0 ] && elapsed=0
             [ "$elapsed" -gt 600 ] && return 0
             chip+=" $(claudefuel_format_age "$elapsed")"
@@ -1124,18 +1172,15 @@ segment_drift() {
     drift_segment=$(claudefuel_drift_segment)
     [ -n "$drift_segment" ] || return 0
 
-    # Severity gate (calm cockpit): a patch-level bump renders faint —
-    # present but de-escalated; a minor/major bump keeps the yellow weight.
-    # Severity is derived from the same two version strings the segment
-    # compared: the installed header and the cached upstream version.
-    local drift_color="$yellow" drift_installed drift_upstream
-    drift_installed=$(head -20 "${BASH_SOURCE[0]:-$0}" \
-        | grep -E '^# claudefuel:' | head -n1 \
-        | sed -E 's/^# claudefuel: v//')
-    drift_upstream=$(jq -r '.upstream_version // empty' \
-        "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cache/claudefuel-version.json" 2>/dev/null)
-    if [ -n "$drift_upstream" ] && \
-       [ "$(echo "$drift_installed" | cut -d. -f1-2)" = "$(echo "$drift_upstream" | cut -d. -f1-2)" ]; then
+    # Severity gate: a patch-level bump renders faint — present but
+    # de-escalated; a minor/major bump keeps the yellow weight. Derived
+    # from the same two version strings the segment compared. The segment
+    # ran in a subshell, so re-derive the two strings here (header read +
+    # cache read, no network).
+    local drift_color="$yellow" installed upstream
+    installed=$installed_version
+    upstream=$(read_upstream_version "$cache_dir/claudefuel-version.json")
+    if [ -n "$upstream" ] && [ "${installed%.*}" = "${upstream%.*}" ]; then
         drift_color="$dim"
     fi
     printf '%s' "${drift_color}$(cf_link "https://github.com/FlorianRiquelme/claudefuel/releases" "$drift_segment")${reset}"
@@ -1154,112 +1199,71 @@ done
 cf_timing_mark drift
 
 # ===== Cross-platform OAuth token resolution (read-only) =====
-# Tries credential sources in order: env var → macOS Keychain → Linux creds file → GNOME Keyring
-# The render path never mutates credentials: an expired access token is
-# treated as an auth failure (render stale cache with an age marker) and
-# Claude Code refreshes the token on its own schedule.
-# Supports multiple keychain accounts (Claude Code changed the account name across versions).
-# When CLAUDE_CONFIG_DIR is set, keychain service name gets a hash suffix.
-
-# Derive the keychain service name based on CLAUDE_CONFIG_DIR
-# Claude Code appends first 8 chars of SHA256(config_dir_path) to the service name
-KEYCHAIN_SERVICE="Claude Code-credentials"
-CACHE_SUFFIX=""
-if [ -n "$CLAUDE_CONFIG_DIR" ]; then
-    config_hash=$(echo -n "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-    KEYCHAIN_SERVICE="Claude Code-credentials-${config_hash}"
-    CACHE_SUFFIX="-${config_hash}"
-fi
-
-# Check if token is expired (with 60-second buffer)
-is_token_expired() {
-    local expires_at_ms="$1"
-    [ -z "$expires_at_ms" ] || [ "$expires_at_ms" = "null" ] && return 0  # no expiry = treat as expired
-    local now_ms=$(( $(cf_now) * 1000 ))
-    local buffer_ms=60000  # 60 seconds buffer
-    [ "$now_ms" -ge $(( expires_at_ms - buffer_ms )) ]
+# Sources in order: env var → macOS Keychain → credentials file → GNOME
+# Keyring. The render path never mutates credentials: an expired access
+# token (60s buffer) is an auth failure for this render, and Claude Code
+# refreshes it on its own schedule.
+# When CLAUDE_CONFIG_DIR is set, Claude Code appends the first 8 chars of
+# SHA256(config_dir_path) to the credential service name — on every store.
+# Resolved lazily (shasum is a fork) — only renders that reach a keychain
+# or secret-tool lookup pay for it.
+KEYCHAIN_SERVICE=""
+keychain_service() {
+    if [ -z "$KEYCHAIN_SERVICE" ]; then
+        KEYCHAIN_SERVICE="Claude Code-credentials"
+        if [ -n "$CLAUDE_CONFIG_DIR" ]; then
+            local h
+            h=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
+            KEYCHAIN_SERVICE="Claude Code-credentials-${h}"
+        fi
+    fi
+    printf '%s' "$KEYCHAIN_SERVICE"
 }
 
-# Try a specific macOS Keychain account, return token if valid
-# Usage: try_keychain_account <account_name>
-try_keychain_account() {
-    local acct="$1"
-    local blob token expires_at
-
-    blob=$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$acct" -w 2>/dev/null) || return 1
-    [ -z "$blob" ] && return 1
-
-    token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-    [ -z "$token" ] || [ "$token" = "null" ] && return 1
-
-    expires_at=$(echo "$blob" | jq -r '.claudeAiOauth.expiresAt // empty' 2>/dev/null)
-
-    # Read-only credentials: an expired token is an auth failure, never a
-    # render-path refresh. Claude Code refreshes on its own schedule.
-    is_token_expired "$expires_at" && return 1
-
-    echo "$token"
-    return 0
+# Echo the access token from a credential blob if present and unexpired.
+# One jq for both fields. A blob without expiresAt is treated as expired.
+token_from_blob() {
+    local tok exp
+    IFS=$'\x1f' read -r tok exp <<<"$(printf '%s' "$1" | jq -r '[
+        (.claudeAiOauth.accessToken // ""),
+        (.claudeAiOauth.expiresAt // "")
+    ] | map(tostring) | join("\u001f")' 2>/dev/null)"
+    [ -n "$tok" ] && [ "$tok" != "null" ] || return 1
+    case "$exp" in ''|null|*[!0-9]*) return 1 ;; esac
+    [ $(( now * 1000 )) -lt $(( exp - 60000 )) ] || return 1
+    printf '%s' "$tok"
 }
 
 get_oauth_token() {
-    local token=""
-
     # 1. Explicit env var override (no expiry check possible)
     if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-        echo "$CLAUDE_CODE_OAUTH_TOKEN"
+        printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN"
         return 0
     fi
 
-    # 2. macOS Keychain — try multiple account names
-    #    Claude Code uses different account names across versions:
-    #    - Newer: OS username (e.g. "john")
-    #    - Older: "Claude Code"
-    #    When CLAUDE_CONFIG_DIR is set, a hash suffix is added to the service name.
+    local blob acct
+    # 2. macOS Keychain. Account name is the OS user on newer Claude Code,
+    #    the literal "Claude Code" on older versions.
     if command -v security >/dev/null 2>&1; then
-        local os_user
-        os_user=$(whoami)
-
-        # Try OS username first (newer Claude Code), then legacy "Claude Code"
-        for acct in "$os_user" "Claude Code"; do
-            token=$(try_keychain_account "$acct")
-            if [ -n "$token" ]; then
-                echo "$token"
-                return 0
-            fi
+        for acct in "$(whoami)" "Claude Code"; do
+            blob=$(security find-generic-password -s "$(keychain_service)" -a "$acct" -w 2>/dev/null) || continue
+            [ -n "$blob" ] && token_from_blob "$blob" && return 0
         done
     fi
 
     # 3. Linux credentials file
-    local creds_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
+    local creds_file="$config_dir/.credentials.json"
     if [ -f "$creds_file" ]; then
-        local expires_at
-        token=$(jq -r '.claudeAiOauth.accessToken // empty' "$creds_file" 2>/dev/null)
-        expires_at=$(jq -r '.claudeAiOauth.expiresAt // empty' "$creds_file" 2>/dev/null)
-
-        if [ -n "$token" ] && [ "$token" != "null" ] && ! is_token_expired "$expires_at"; then
-            echo "$token"
-            return 0
-        fi
+        token_from_blob "$(cat "$creds_file" 2>/dev/null)" && return 0
     fi
 
-    # 4. GNOME Keyring via secret-tool
+    # 4. GNOME Keyring via secret-tool (same profile-suffixed service name)
     if command -v secret-tool >/dev/null 2>&1; then
-        local blob
-        blob=$(timeout 2 secret-tool lookup service "Claude Code-credentials" 2>/dev/null)
-        if [ -n "$blob" ]; then
-            local expires_at
-            token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-            expires_at=$(echo "$blob" | jq -r '.claudeAiOauth.expiresAt // empty' 2>/dev/null)
-
-            if [ -n "$token" ] && [ "$token" != "null" ] && ! is_token_expired "$expires_at"; then
-                echo "$token"
-                return 0
-            fi
-        fi
+        blob=$(timeout 2 secret-tool lookup service "$(keychain_service)" 2>/dev/null)
+        [ -n "$blob" ] && token_from_blob "$blob" && return 0
     fi
 
-    echo ""
+    return 1
 }
 
 # Atomic cross-process lock so only ONE statusline process — across all the
@@ -1275,7 +1279,7 @@ claudefuel_try_lock() {
         return 0
     fi
     local m
-    m=$(stat -c %Y "$dir" 2>/dev/null || stat -f %m "$dir" 2>/dev/null)
+    m=$(file_mtime "$dir")
     if [ -n "$m" ] && [ $(( lock_now - m )) -gt "$max_hold" ]; then
         rm -rf "$dir" 2>/dev/null
         mkdir "$dir" 2>/dev/null && return 0
@@ -1284,35 +1288,46 @@ claudefuel_try_lock() {
 }
 
 # ===== LINE 2 & 3: Usage limits with progress bars (cached) =====
-# Cache is per-account when CLAUDE_CONFIG_DIR is set
-cache_file="/tmp/claude/statusline-usage-cache${CACHE_SUFFIX}.json"
+# All runtime files live in the active profile's cache dir.
+cache_file="$cache_dir/claudefuel-usage.json"
 # Tracks the last fetch *attempt* (success or failure) — separate from
 # cache_file's mtime, which only moves on success. Without this, a failing
 # fetch (e.g. rate-limited) never ages the cache_file mtime, so cache_age
 # stays >= cache_max_age forever and every subsequent render retries the
 # request with no backoff, which can keep an upstream rate limit alive
 # indefinitely while silently showing stale numbers.
-attempt_file="/tmp/claude/statusline-usage-attempt${CACHE_SUFFIX}"
+attempt_file="$cache_dir/claudefuel-usage.attempt"
 # When the API rate-limits us (429) it returns a Retry-After telling us how
 # long to stay quiet — often tens of minutes. This file records that deadline
-# (absolute epoch seconds). Poking the endpoint again before it passes keeps
-# the rate limit alive indefinitely, so honoring it is what lets usage recover.
-retryafter_file="/tmp/claude/statusline-usage-retryafter${CACHE_SUFFIX}"
-usage_lock_dir="/tmp/claude/statusline-usage-fetch${CACHE_SUFFIX}.lock"
-# 5 min between API calls. The 5h/7d rate windows move slowly, so a longer TTL
-# keeps the bars current enough while cutting the endpoint's request rate — the
-# limit is per-account and shared with Claude Code's own polling and every other
-# open session, so a small footprint matters more than second-fresh numbers.
+# (absolute epoch seconds), shared by every endpoint on the host.
+retryafter_file="$cache_dir/claudefuel-retry-after"
+usage_lock_dir="$cache_dir/claudefuel-usage.lock"
+# Cadence between OAuth usage calls. 5 min on the fallback path (the bars
+# depend on it); 30 min when stdin rate_limits already drive the bars and
+# the fetch only enriches the extra column — the endpoint is rate-limited
+# per account and shared with Claude Code's own polling and every open
+# session, so the enrichment footprint is kept small.
 cache_max_age=300
-mkdir -p /tmp/claude
+[ "$usage_source" = "stdin" ] && cache_max_age=1800
+[ -d "$cache_dir" ] || mkdir -p "$cache_dir" 2>/dev/null
+
+# Native mirror: with stdin driving the bars, write the same numbers to
+# the cache dir (usage-cache shape, resets_at as epoch) so --snapshot,
+# --fleet and sibling profiles' ⇄ hint read what this bar shows rather
+# than a minutes-old OAuth copy. A plain redirect — no process spawned.
+if [ "$usage_source" = "stdin" ] && [ -z "$demo_state" ]; then
+    printf '{"source":"stdin","five_hour":{"utilization":%s,"resets_at":%s},"seven_day":{"utilization":%s,"resets_at":%s}}\n' \
+        "$rl_5h_pct" "${rl_5h_reset:-null}" "$rl_7d_pct" "${rl_7d_reset:-null}" \
+        > "$cache_dir/claudefuel-native.json" 2>/dev/null
+fi
 
 # Heartbeat: mark this session live on this account window. The id is
 # sanitized to a filename-safe alphabet before it touches the path.
-sessions_dir="/tmp/claude/statusline-sessions${CACHE_SUFFIX}"
+sessions_dir="$cache_dir/claudefuel-sessions"
 if [ -z "$demo_state" ] && [ -n "$session_id" ]; then
-    session_hb=$(printf '%s' "$session_id" | tr -cd 'A-Za-z0-9._-')
+    session_hb="${session_id//[^A-Za-z0-9._-]/}"
     if [ -n "$session_hb" ]; then
-        mkdir -p "$sessions_dir" 2>/dev/null \
+        { [ -d "$sessions_dir" ] || mkdir -p "$sessions_dir" 2>/dev/null; } \
             && touch "$sessions_dir/s-${session_hb}" 2>/dev/null
     fi
 fi
@@ -1336,7 +1351,7 @@ fi
 # ended up hammering a rate-limited endpoint blind.
 claudefuel_fetch_usage() {
     local token="$1" response http_status hdr_file retry_secs
-    hdr_file="/tmp/claude/statusline-usage-hdr${CACHE_SUFFIX}.$$"
+    hdr_file="$cache_dir/claudefuel-usage.hdr.$$"
     response=$(curl -s -D "$hdr_file" --max-time 5 \
         -H "Accept: application/json" \
         -H "Content-Type: application/json" \
@@ -1357,7 +1372,7 @@ claudefuel_fetch_usage() {
         case "$retry_secs" in
             ''|*[!0-9]*) retry_secs=300 ;;
         esac
-        echo $(( $(cf_now) + retry_secs )) > "$retryafter_file"
+        echo $(( now + retry_secs )) > "$retryafter_file"
     fi
     rm -f "$hdr_file" 2>/dev/null
 }
@@ -1365,14 +1380,13 @@ claudefuel_fetch_usage() {
 needs_refresh=true
 usage_data=""
 cache_mtime=""
-now=$(cf_now)
 
 # Cache-first paint: read whatever cache exists — fresh or stale — so the
 # render never waits on the network once a cache file is on disk.
 if [ -f "$cache_file" ]; then
-    usage_data=$(cat "$cache_file" 2>/dev/null)
-    cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
-    cache_age=$(( now - cache_mtime ))
+    usage_data=$(<"$cache_file")
+    cache_mtime=$(file_mtime "$cache_file")
+    cache_age=$(( now - ${cache_mtime:-0} ))
     [ "$cache_age" -lt "$cache_max_age" ] && needs_refresh=false
 fi
 
@@ -1393,8 +1407,8 @@ fi
 # of when the data last actually changed.
 should_attempt=true
 if [ -f "$attempt_file" ]; then
-    attempt_mtime=$(stat -c %Y "$attempt_file" 2>/dev/null || stat -f %m "$attempt_file" 2>/dev/null)
-    attempt_age=$(( now - attempt_mtime ))
+    attempt_mtime=$(file_mtime "$attempt_file")
+    attempt_age=$(( now - ${attempt_mtime:-0} ))
     [ "$attempt_age" -lt "$cache_max_age" ] && should_attempt=false
 fi
 
@@ -1484,8 +1498,8 @@ if [ "$usage_source" = "oauth" ] && [ -n "$usage_data" ] && [ -n "$cache_mtime" 
             esac
         fi
         if [ -z "$usage_next_epoch" ] && [ -f "$attempt_file" ]; then
-            attempt_mtime=$(stat -c %Y "$attempt_file" 2>/dev/null || stat -f %m "$attempt_file" 2>/dev/null)
-            next_attempt=$(( attempt_mtime + cache_max_age ))
+            attempt_mtime=$(file_mtime "$attempt_file")
+            next_attempt=$(( ${attempt_mtime:-0} + cache_max_age ))
             [ "$next_attempt" -gt "$now" ] && usage_next_epoch="$next_attempt"
         fi
     fi
@@ -1495,10 +1509,10 @@ cf_timing_mark usage
 
 # ===== Prepaid credit balance (separate cache, longer TTL) =====
 # Balance changes slowly, so cache for 5 min to avoid hammering the API.
-prepaid_cache_file="/tmp/claude/statusline-prepaid-cache${CACHE_SUFFIX}.json"
-prepaid_attempt_file="/tmp/claude/statusline-prepaid-attempt${CACHE_SUFFIX}"
-prepaid_lock_dir="/tmp/claude/statusline-prepaid-fetch${CACHE_SUFFIX}.lock"
-org_cache_file="/tmp/claude/statusline-orguuid-cache${CACHE_SUFFIX}"
+prepaid_cache_file="$cache_dir/claudefuel-prepaid.json"
+prepaid_attempt_file="$cache_dir/claudefuel-prepaid.attempt"
+prepaid_lock_dir="$cache_dir/claudefuel-prepaid.lock"
+org_cache_file="$cache_dir/claudefuel-org-uuid"
 prepaid_cache_max_age=300
 prepaid_data=""
 prepaid_stale=false
@@ -1530,7 +1544,7 @@ claudefuel_fetch_prepaid() {
     fi
     [ -z "$org_uuid" ] && return 0
 
-    p_hdr="/tmp/claude/statusline-prepaid-hdr${CACHE_SUFFIX}.$$"
+    p_hdr="$cache_dir/claudefuel-prepaid.hdr.$$"
     prepaid_resp=$(curl -s -D "$p_hdr" --max-time 5 \
         -H "Authorization: Bearer $token" \
         -H "anthropic-beta: oauth-2025-04-20" \
@@ -1547,16 +1561,16 @@ claudefuel_fetch_prepaid() {
         case "$p_retry" in
             ''|*[!0-9]*) p_retry=300 ;;
         esac
-        echo $(( $(cf_now) + p_retry )) > "$retryafter_file"
+        echo $(( now + p_retry )) > "$retryafter_file"
     fi
     rm -f "$p_hdr" 2>/dev/null
 }
 
 # Cache-first paint: stale balance still renders this turn.
 if [ -f "$prepaid_cache_file" ]; then
-    prepaid_data=$(cat "$prepaid_cache_file" 2>/dev/null)
-    p_mtime=$(stat -c %Y "$prepaid_cache_file" 2>/dev/null || stat -f %m "$prepaid_cache_file" 2>/dev/null)
-    p_age=$(( $(cf_now) - p_mtime ))
+    prepaid_data=$(<"$prepaid_cache_file")
+    p_mtime=$(file_mtime "$prepaid_cache_file")
+    p_age=$(( now - ${p_mtime:-0} ))
     [ "$p_age" -ge "$prepaid_cache_max_age" ] && prepaid_stale=true
 fi
 
@@ -1567,8 +1581,8 @@ fi
 # fetch may set: a 429 from either endpoint pauses all account API traffic.
 prepaid_should_attempt=true
 if [ -f "$prepaid_attempt_file" ]; then
-    pa_mtime=$(stat -c %Y "$prepaid_attempt_file" 2>/dev/null || stat -f %m "$prepaid_attempt_file" 2>/dev/null)
-    [ $(( now - pa_mtime )) -lt "$prepaid_cache_max_age" ] && prepaid_should_attempt=false
+    pa_mtime=$(file_mtime "$prepaid_attempt_file")
+    [ $(( now - ${pa_mtime:-0} )) -lt "$prepaid_cache_max_age" ] && prepaid_should_attempt=false
 fi
 if [ -f "$retryafter_file" ]; then
     prepaid_retry_deadline=$(cat "$retryafter_file" 2>/dev/null)
@@ -1655,29 +1669,22 @@ resolve_stdin_epoch() {
     esac
 }
 
-# Format an epoch to compact local time
+# Format an epoch to compact local time (one date exec; am/pm lowercased,
+# BSD's space-padded hour trimmed).
 # Usage: format_epoch_time <epoch> <style: time|datetime|date>
 format_epoch_time() {
-    local epoch="$1"
-    local style="$2"
+    local epoch="$1" style="$2" fmt
     [ -z "$epoch" ] && return
-
-    # Format based on style (try BSD date first, then GNU date)
-    # BSD date uses %p (uppercase AM/PM), so convert to lowercase
     case "$style" in
-        time)
-            date -j -r "$epoch" +"%l:%M%p" 2>/dev/null | sed 's/^ //' | tr '[:upper:]' '[:lower:]' || \
-            date -d "@$epoch" +"%l:%M%P" 2>/dev/null | sed 's/^ //'
-            ;;
-        datetime)
-            date -j -r "$epoch" +"%b %-d, %l:%M%p" 2>/dev/null | sed 's/  / /g; s/^ //' | tr '[:upper:]' '[:lower:]' || \
-            date -d "@$epoch" +"%b %-d, %l:%M%P" 2>/dev/null | sed 's/  / /g; s/^ //'
-            ;;
-        *)
-            date -j -r "$epoch" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]' || \
-            date -d "@$epoch" +"%b %-d" 2>/dev/null
-            ;;
+        time)     fmt="%l:%M%p" ;;
+        datetime) fmt="%b %-d, %l:%M%p" ;;
+        *)        fmt="%b %-d" ;;
     esac
+    local out
+    out=$(cf_date "$epoch" "$fmt")
+    out="${out//  / }"; out="${out# }"
+    out="${out/AM/am}"; out="${out/PM/pm}"
+    printf '%s' "$out"
 }
 
 # Format an epoch (seconds) as a local clock time like "5:53pm".
@@ -1691,7 +1698,7 @@ format_clock_time() {
 format_countdown() {
     local epoch=$1
     [ -z "$epoch" ] && return
-    local diff=$(( epoch - $(cf_now) ))
+    local diff=$(( epoch - now ))
     [ "$diff" -lt 0 ] && diff=0
     local d=$(( diff / 86400 )) h=$(( diff % 86400 / 3600 )) m=$(( diff % 3600 / 60 ))
     if [ "$d" -gt 0 ]; then
@@ -1706,13 +1713,12 @@ format_countdown() {
 # Compact duration formatter: seconds → "1h50m" / "42m".
 # Usage: format_duration <seconds>
 format_duration() {
-    local secs=$1
-    awk -v s="$secs" 'BEGIN {
-        if (s < 0) s = 0
-        h = int(s / 3600); m = int((s % 3600) / 60)
-        if (h > 0) printf "%dh%02dm", h, m
-        else printf "%dm", m
-    }'
+    local secs=$1 h m
+    [ "$secs" -lt 0 ] 2>/dev/null && secs=0
+    h=$(( secs / 3600 )); m=$(( (secs % 3600) / 60 ))
+    if [ "$h" -gt 0 ]; then printf '%dh%02dm' "$h" "$m"
+    else printf '%dm' "$m"
+    fi
 }
 
 # Projected cap epoch for a usage window — the governing-constraint
@@ -1729,14 +1735,13 @@ claudefuel_cap_epoch() {
     [ -z "$reset_epoch" ] && return 0
     [ "$pct" -ge 10 ] 2>/dev/null || return 0
 
-    local now window_started elapsed
-    now=$(cf_now)
+    local window_started elapsed
     window_started=$(( reset_epoch - window_length ))
     elapsed=$(( now - window_started ))
     [ "$elapsed" -gt 0 ] || return 0
 
     local cap_eta
-    cap_eta=$(awk "BEGIN {printf \"%d\", $now + (100 - $pct) * $elapsed / $pct}")
+    cap_eta=$(( now + (100 - pct) * elapsed / pct ))
     [ "$cap_eta" -lt "$reset_epoch" ] || return 0
 
     printf "%s" "$cap_eta"
@@ -1758,8 +1763,7 @@ claudefuel_burn_chip() {
     [ -z "$reset_epoch" ] && return 0
     [ "$pct" -ge 10 ] 2>/dev/null || return 0
 
-    local now window_started elapsed
-    now=$(cf_now)
+    local window_started elapsed
     window_started=$(( reset_epoch - window_length ))
     elapsed=$(( now - window_started ))
     [ "$elapsed" -gt 0 ] || return 0
@@ -1768,8 +1772,10 @@ claudefuel_burn_chip() {
     [ $(( pct * window_length )) -gt $(( 100 * elapsed )) ] || return 0
 
     local time_to_cap ratio
-    time_to_cap=$(awk "BEGIN {printf \"%d\", (100 - $pct) * $elapsed / $pct}")
-    ratio=$(awk "BEGIN {printf \"%.1f\", $pct * $window_length / (100 * $elapsed)}")
+    time_to_cap=$(( (100 - pct) * elapsed / pct ))
+    # ratio to one decimal, rounded: tenths = pct*window*10 / (100*elapsed)
+    local r10=$(( (pct * window_length * 20 / (100 * elapsed) + 1) / 2 ))
+    ratio="$(( r10 / 10 )).$(( r10 % 10 ))"
 
     printf "~%s ×%s" "$(format_duration "$time_to_cap")" "$ratio"
 }
@@ -1794,8 +1800,7 @@ claudefuel_projection() {
     [ -z "$reset_epoch" ] && return 0
     [ "$pct" -ge 10 ] 2>/dev/null || return 0
 
-    local now window_started elapsed
-    now=$(cf_now)
+    local window_started elapsed
     window_started=$(( reset_epoch - window_length ))
     elapsed=$(( now - window_started ))
     [ "$elapsed" -gt 0 ] || return 0
@@ -1804,7 +1809,7 @@ claudefuel_projection() {
     [ $(( pct * window_length )) -le $(( 100 * elapsed )) ] || return 0
 
     local projected
-    projected=$(awk "BEGIN {printf \"%d\", $pct * $window_length / $elapsed}")
+    projected=$(( pct * window_length / elapsed ))
     [ "$projected" -ge "$cfg_th_yellow" ] || return 0
 
     printf "→%s%%" "$projected"
@@ -1832,31 +1837,25 @@ claudefuel_cap_eta_segment() {
     cap_eta=$(claudefuel_cap_epoch "$pct" "$reset_epoch" "$window_length")
     [ -z "$cap_eta" ] && return 0
 
-    local now
-    now=$(cf_now)
-
     # Horizon-scaled uncertainty: ±15% of the time-to-cap horizon,
     # floored at ±5min. Near caps get tight honest ranges; far caps
     # get wide ones (the fixed ±15min band claimed false precision
     # at long horizons and false vagueness at short ones).
     local time_to_cap=$(( cap_eta - now ))
     local half_band
-    half_band=$(awk "BEGIN {h = $time_to_cap * 0.15; if (h < 300) h = 300; printf \"%d\", h}")
+    half_band=$(( time_to_cap * 15 / 100 ))
+    [ "$half_band" -lt 300 ] && half_band=300
 
     local cap_low=$(( cap_eta - half_band )) cap_high=$(( cap_eta + half_band ))
-    local low_str high_str
-    low_str=$(date -j -r "$cap_low" +"%l:%M%p" 2>/dev/null | sed 's/^ //' | tr '[:upper:]' '[:lower:]' \
-        || date -d "@$cap_low" +"%l:%M%P" 2>/dev/null | sed 's/^ //')
-    high_str=$(date -j -r "$cap_high" +"%l:%M%p" 2>/dev/null | sed 's/^ //' | tr '[:upper:]' '[:lower:]' \
-        || date -d "@$cap_high" +"%l:%M%P" 2>/dev/null | sed 's/^ //')
-
-    local segment="~cap ${low_str}-${high_str}"
+    local segment
+    segment="~cap $(format_clock_time "$cap_low")-$(format_clock_time "$cap_high")"
 
     # Steer-to: floor((100-pct)/remaining ÷ reset-pace, 1 decimal).
     # Always < 1.0 when cap-ETA fires, so it is always a slow-down.
     local remaining=$(( reset_epoch - now ))
     local steer
-    steer=$(awk "BEGIN {printf \"%.1f\", int((100 - $pct) * $window_length * 10 / (100 * $remaining)) / 10}")
+    local s10=$(( (100 - pct) * window_length * 10 / (100 * remaining) ))
+    steer="$(( s10 / 10 )).$(( s10 % 10 ))"
     segment+=" · slow ≤${steer}×"
 
     # Stranding gap: dormant under 5 minutes.
@@ -2032,16 +2031,17 @@ column_extra() {
     # stdin driving the bars the cache may legitimately be absent — the
     # column stays dormant until a background fetch lands one.
     [ -n "$usage_data" ] || return 0
-    local extra_enabled extra_spent extra_spend_live prepaid_raw_amount
-    extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')
-    extra_spent=$(echo "$usage_data" | jq -r '.extra_usage.used_credits // 0')
-    extra_spend_live=$(awk "BEGIN {print ($extra_spent > 0) ? \"true\" : \"false\"}")
-    [ "$extra_enabled" = "true" ] && [ "$extra_spend_live" = "true" ] && [ -n "$prepaid_data" ] || return 0
-
-    local prepaid_amount prepaid_currency sym
-    prepaid_raw_amount=$(echo "$prepaid_data" | jq -r '.amount // 0')
-    prepaid_amount=$(echo "$prepaid_raw_amount" | awk '{printf "%.2f", $1/100}')
-    prepaid_currency=$(echo "$prepaid_data" | jq -r '.currency // "USD"')
+    [ -n "$prepaid_data" ] || return 0
+    local extra_live prepaid_amount prepaid_currency sym
+    # One jq over both payloads: the spend gate and the formatted balance.
+    IFS=$'\x1f' read -r extra_live prepaid_amount prepaid_currency <<<"$(
+        jq -rn --argjson u "$usage_data" --argjson p "$prepaid_data" '[
+            (($u.extra_usage.is_enabled // false) == true and (($u.extra_usage.used_credits // 0) | tonumber? // 0) > 0),
+            ((($p.amount // 0) | tonumber? // 0) / 100 | . * 100 | round / 100 | tostring
+                | if test("\\.[0-9]$") then . + "0" elif test("\\.") then . else . + ".00" end),
+            ($p.currency // "USD")
+        ] | map(tostring) | join("\u001f")' 2>/dev/null)"
+    [ "$extra_live" = "true" ] || return 0
     case "$prepaid_currency" in
         EUR) sym="€" ;;
         GBP) sym="£" ;;
@@ -2070,16 +2070,20 @@ if [ "$usage_source" = "stdin" ] \
     # marker needs both windows before either column renders). Native
     # first: stdin rate_limits when present, the OAuth cache otherwise. ----
     if [ "$usage_source" = "stdin" ]; then
-        five_hour_pct=$(printf '%s' "$rl_5h_pct" | awk '{printf "%.0f", $1}')
+        five_hour_pct=$rl_5h_pct
         five_hour_reset_epoch=$(resolve_stdin_epoch "$rl_5h_reset")
-        seven_day_pct=$(printf '%s' "$rl_7d_pct" | awk '{printf "%.0f", $1}')
+        seven_day_pct=$rl_7d_pct
         seven_day_reset_epoch=$(resolve_stdin_epoch "$rl_7d_reset")
     else
-        five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
-        five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
+        IFS=$'\x1f' read -r five_hour_pct five_hour_reset_iso seven_day_pct seven_day_reset_iso \
+            <<<"$(printf '%s' "$usage_data" | jq -r '[
+                ((.five_hour.utilization // 0) | tonumber? // 0 | round),
+                (.five_hour.resets_at // ""),
+                ((.seven_day.utilization // 0) | tonumber? // 0 | round),
+                (.seven_day.resets_at // "")
+            ] | map(tostring) | join("\u001f")' 2>/dev/null)"
+        : "${five_hour_pct:=0}" "${seven_day_pct:=0}"
         five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
-        seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
-        seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
         seven_day_reset_epoch=$(iso_to_epoch "$seven_day_reset_iso")
     fi
 
@@ -2115,9 +2119,9 @@ if [ "$usage_source" = "stdin" ] \
     # Shared-window session count — `⧉ N` when more than one live session
     # is drawing on this account window. Explains the classic confusion
     # ("why is my bar hot / stale? — eleven other panes share this
-    # window") right where it arises. Subject to the calm-cockpit
-    # collapse below: nominal windows still earn zero extra rows.
-    # Hide-only token "sessions". Detail view: /claudefuel.fleet.
+    # window") right where it arises. Dormant at one session; hidden by
+    # the ≤80-column ladder. Hide-only token "sessions". Detail view:
+    # /claudefuel.fleet.
     if [ -z "$demo_state" ] && ! segment_hidden sessions; then
         session_count=$(claudefuel_session_count "$sessions_dir" prune)
         if [ "$session_count" -gt 1 ]; then
@@ -2131,7 +2135,8 @@ if [ "$usage_source" = "stdin" ] \
     # tracks projected-to-cap, not simply the higher of the two numbers).
     active_governing_pct=$five_hour_pct
     [ "$seven_day_pct" -gt "$active_governing_pct" ] 2>/dev/null && active_governing_pct=$seven_day_pct
-    switch_hint=$(claudefuel_switch_hint "$active_governing_pct" "$cache_file")
+    switch_hint=""
+    [ "$term_cols" -eq 0 ] || [ "$term_cols" -gt 80 ] && switch_hint=$(claudefuel_switch_hint "$active_governing_pct" "$config_dir")
     [ -n "$switch_hint" ] && line2+="${sep}${yellow}${switch_hint}${reset}"
 
     # Severe staleness (fetches have been failing well beyond the normal

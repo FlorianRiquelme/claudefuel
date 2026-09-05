@@ -31,16 +31,12 @@ setup() {
   printf '{"upstream_version":"%s"}\n' "$installed_version" \
     > "$CLAUDE_CONFIG_DIR/cache/claudefuel-version.json"
 
-  # Mirror statusline.sh's CACHE_SUFFIX derivation to locate caches.
-  config_hash=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-  USAGE_CACHE="/tmp/claude/statusline-usage-cache-${config_hash}.json"
-  PREPAID_CACHE="/tmp/claude/statusline-prepaid-cache-${config_hash}.json"
-  ORG_CACHE="/tmp/claude/statusline-orguuid-cache-${config_hash}"
-  mkdir -p /tmp/claude
+  USAGE_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json"
+  PREPAID_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-prepaid.json"
+  ORG_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-org-uuid"
 }
 
 teardown() {
-  rm -f "$USAGE_CACHE" "$PREPAID_CACHE" "$ORG_CACHE" 2>/dev/null
   [ -n "$FAKEBIN" ] && [ -d "$FAKEBIN" ] && rm -rf "$FAKEBIN"
   [ -n "$CLAUDE_CONFIG_DIR" ] && [ -d "$CLAUDE_CONFIG_DIR" ] && rm -rf "$CLAUDE_CONFIG_DIR"
 }

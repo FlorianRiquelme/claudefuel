@@ -17,10 +17,8 @@ setup() {
   printf '{"upstream_version":"%s"}\n' "$installed_version" \
     > "$CLAUDE_CONFIG_DIR/cache/claudefuel-version.json"
 
-  config_hash=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-  USAGE_CACHE="/tmp/claude/statusline-usage-cache-${config_hash}.json"
-  PREPAID_CACHE="/tmp/claude/statusline-prepaid-cache-${config_hash}.json"
-  mkdir -p /tmp/claude
+  USAGE_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json"
+  PREPAID_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-prepaid.json"
 
   # Extra column live so the narrow tier has something to drop.
   cat > "$USAGE_CACHE" <<'EOF'
@@ -33,8 +31,6 @@ EOF
 }
 
 teardown() {
-  rm -f "$USAGE_CACHE" "$PREPAID_CACHE" 2>/dev/null
-  rm -rf "/tmp/claude/statusline-sessions-${config_hash}" 2>/dev/null
   [ -n "$CLAUDE_CONFIG_DIR" ] && [ -d "$CLAUDE_CONFIG_DIR" ] && rm -rf "$CLAUDE_CONFIG_DIR"
 }
 

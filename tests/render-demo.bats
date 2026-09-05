@@ -25,10 +25,8 @@ setup() {
   printf '{"claudeAiOauth":{"accessToken":"test-token","refreshToken":"r","expiresAt":99999999999999}}' \
     > "$CLAUDE_CONFIG_DIR/.credentials.json"
 
-  config_hash=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-  USAGE_CACHE="/tmp/claude/statusline-usage-cache-${config_hash}.json"
-  PREPAID_CACHE="/tmp/claude/statusline-prepaid-cache-${config_hash}.json"
-  mkdir -p /tmp/claude
+  USAGE_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json"
+  PREPAID_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-prepaid.json"
 
   # curl shim: any invocation is a contract violation, logged.
   SHIM_DIR=$(mktemp -d)
@@ -43,7 +41,6 @@ SHIM
 }
 
 teardown() {
-  rm -f "$USAGE_CACHE" "$PREPAID_CACHE" 2>/dev/null
   [ -n "$SHIM_DIR" ] && [ -d "$SHIM_DIR" ] && rm -rf "$SHIM_DIR"
   [ -n "$CLAUDE_CONFIG_DIR" ] && [ -d "$CLAUDE_CONFIG_DIR" ] && rm -rf "$CLAUDE_CONFIG_DIR"
 }

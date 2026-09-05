@@ -25,13 +25,11 @@ setup() {
   printf '{"upstream_version":"%s"}\n' "$installed_version" \
     > "$CLAUDE_CONFIG_DIR/cache/claudefuel-version.json"
 
-  config_hash=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-  USAGE_CACHE="/tmp/claude/statusline-usage-cache-${config_hash}.json"
-  PREPAID_CACHE="/tmp/claude/statusline-prepaid-cache-${config_hash}.json"
-  PREPAID_ATTEMPT="/tmp/claude/statusline-prepaid-attempt-${config_hash}"
-  ORG_CACHE="/tmp/claude/statusline-orguuid-cache-${config_hash}"
-  RETRYAFTER_FILE="/tmp/claude/statusline-usage-retryafter-${config_hash}"
-  mkdir -p /tmp/claude
+  USAGE_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json"
+  PREPAID_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-prepaid.json"
+  PREPAID_ATTEMPT="$CLAUDE_CONFIG_DIR/cache/claudefuel-prepaid.attempt"
+  ORG_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-org-uuid"
+  RETRYAFTER_FILE="$CLAUDE_CONFIG_DIR/cache/claudefuel-retry-after"
 
   # Fresh usage cache so the usage fetch is skipped — isolates the prepaid path.
   cat > "$USAGE_CACHE" <<'EOF'
@@ -63,7 +61,6 @@ EOF
 }
 
 teardown() {
-  rm -f "$USAGE_CACHE" "$PREPAID_CACHE" "$PREPAID_ATTEMPT" "$ORG_CACHE" "$RETRYAFTER_FILE" 2>/dev/null
   [ -n "$CLAUDE_CONFIG_DIR" ] && [ -d "$CLAUDE_CONFIG_DIR" ] && rm -rf "$CLAUDE_CONFIG_DIR"
   [ -n "$FAKE_BIN" ] && [ -d "$FAKE_BIN" ] && rm -rf "$FAKE_BIN"
 }

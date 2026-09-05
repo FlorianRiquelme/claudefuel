@@ -24,13 +24,11 @@ setup() {
   printf '{"claudeAiOauth":{"accessToken":"test-token","refreshToken":"test-refresh","expiresAt":99999999999999}}' \
     > "$CLAUDE_CONFIG_DIR/.credentials.json"
 
-  config_hash=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-  USAGE_CACHE="/tmp/claude/statusline-usage-cache-${config_hash}.json"
-  PREPAID_CACHE="/tmp/claude/statusline-prepaid-cache-${config_hash}.json"
-  ORG_CACHE="/tmp/claude/statusline-orguuid-cache-${config_hash}"
-  ATTEMPT_FILE="/tmp/claude/statusline-usage-attempt-${config_hash}"
-  PREPAID_ATTEMPT_FILE="/tmp/claude/statusline-prepaid-attempt-${config_hash}"
-  mkdir -p /tmp/claude
+  USAGE_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json"
+  PREPAID_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-prepaid.json"
+  ORG_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-org-uuid"
+  ATTEMPT_FILE="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.attempt"
+  PREPAID_ATTEMPT_FILE="$CLAUDE_CONFIG_DIR/cache/claudefuel-prepaid.attempt"
 
   # PATH shim: logs every curl call; optional CURL_SLEEP simulates a slow
   # in-flight fetch; response comes from $CURL_RESPONSE_FILE.
@@ -51,8 +49,6 @@ SHIM
 }
 
 teardown() {
-  rm -f "$USAGE_CACHE" "$PREPAID_CACHE" "$ORG_CACHE" \
-    "$ATTEMPT_FILE" "$PREPAID_ATTEMPT_FILE" 2>/dev/null
   [ -n "$SHIM_DIR" ] && [ -d "$SHIM_DIR" ] && rm -rf "$SHIM_DIR"
   [ -n "$CLAUDE_CONFIG_DIR" ] && [ -d "$CLAUDE_CONFIG_DIR" ] && rm -rf "$CLAUDE_CONFIG_DIR"
 }
@@ -154,7 +150,7 @@ make_stale() {
 
 @test "INSTALL.md pins statusLine.refreshInterval in desired state and patch step" {
   INSTALL="${BATS_TEST_DIRNAME}/../INSTALL.md"
-  grep -q '"refreshInterval": 2' "$INSTALL"
-  grep -q 'refreshInterval: 2' "$INSTALL"
-  grep -q '.statusLine.refreshInterval == 2' "$INSTALL"
+  grep -q '"refreshInterval": 5' "$INSTALL"
+  grep -q 'refreshInterval: 5' "$INSTALL"
+  grep -q '.statusLine.refreshInterval == 5' "$INSTALL"
 }

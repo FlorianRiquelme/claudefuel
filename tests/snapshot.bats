@@ -25,11 +25,8 @@ setup() {
   printf '{"upstream_version":"%s"}\n' "$installed_version" \
     > "$CLAUDE_CONFIG_DIR/cache/claudefuel-version.json"
 
-  # Mirror statusline.sh's CACHE_SUFFIX derivation to locate the caches.
-  config_hash=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-  USAGE_CACHE="/tmp/claude/statusline-usage-cache-${config_hash}.json"
-  PREPAID_CACHE="/tmp/claude/statusline-prepaid-cache-${config_hash}.json"
-  mkdir -p /tmp/claude
+  USAGE_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json"
+  PREPAID_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-prepaid.json"
 }
 
 teardown() {
@@ -135,7 +132,8 @@ EOF
   printf '{"amount": 1234, "currency": "USD"}\n' > "$PREPAID_CACHE"
   snap=$("$STATUSLINE" --snapshot)
 
-  echo "$snap" | jq -e '.caches.usage.fresh == true and .caches.usage.ttl_seconds == 60' >/dev/null
+  echo "$snap" | jq -e '.caches.usage.fresh == true and .caches.usage.ttl_seconds == 300' >/dev/null
+  echo "$snap" | jq -e '.caches.usage.source == "oauth"' >/dev/null
   echo "$snap" | jq -e '.caches.prepaid.fresh == true and .caches.prepaid.ttl_seconds == 300' >/dev/null
   echo "$snap" | jq -e '.prepaid.amount == 1234' >/dev/null
 }

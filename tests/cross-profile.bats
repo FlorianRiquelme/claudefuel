@@ -39,22 +39,10 @@ setup() {
   printf '{"upstream_version":"%s"}\n' "$installed_version" \
     > "$CLAUDE_CONFIG_DIR/cache/claudefuel-version.json"
 
-  # Mirror statusline.sh's CACHE_SUFFIX derivation for the active cache.
-  config_hash=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-  ACTIVE_CACHE="/tmp/claude/statusline-usage-cache-${config_hash}.json"
-  mkdir -p /tmp/claude
+  ACTIVE_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json"
 }
 
 teardown() {
-  # Remove every cache this test's fake siblings produced.
-  for d in "$FAKE_HOME"/.claude-*; do
-    [ -d "$d" ] || continue
-    local h
-    h=$(printf '%s' "$d" | shasum -a 256 | cut -c1-8)
-    rm -f "/tmp/claude/statusline-usage-cache-${h}.json" \
-          "/tmp/claude/statusline-prepaid-cache-${h}.json"
-  done
-  rm -f "$ACTIVE_CACHE"
   [ -n "$CLAUDE_CONFIG_DIR" ] && [ -d "$CLAUDE_CONFIG_DIR" ] && rm -rf "$CLAUDE_CONFIG_DIR"
   [ -n "$FAKE_HOME" ] && [ -d "$FAKE_HOME" ] && rm -rf "$FAKE_HOME"
 }
@@ -88,10 +76,8 @@ EOF
 # Sets LAST_SIBLING_CACHE to the seeded cache path.
 seed_sibling() {
   local name=$1 fh_pct=$2 sd_pct=$3
-  mkdir -p "$FAKE_HOME/.claude-$name"
-  local h
-  h=$(printf '%s' "$FAKE_HOME/.claude-$name" | shasum -a 256 | cut -c1-8)
-  LAST_SIBLING_CACHE="/tmp/claude/statusline-usage-cache-${h}.json"
+  mkdir -p "$FAKE_HOME/.claude-$name/cache"
+  LAST_SIBLING_CACHE="$FAKE_HOME/.claude-$name/cache/claudefuel-usage.json"
   write_usage_cache "$LAST_SIBLING_CACHE" "$fh_pct" "$sd_pct"
 }
 
@@ -240,7 +226,7 @@ run_bar() {
 
 @test "fleet: joins a sibling's prepaid cache when present" {
   seed_sibling work 12 8
-  prepaid_file="${LAST_SIBLING_CACHE/statusline-usage-cache/statusline-prepaid-cache}"
+  prepaid_file="${LAST_SIBLING_CACHE/claudefuel-usage/claudefuel-prepaid}"
   printf '{"amount":5929,"currency":"EUR"}\n' > "$prepaid_file"
 
   run "$STATUSLINE" --fleet

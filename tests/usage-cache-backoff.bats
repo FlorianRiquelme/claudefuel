@@ -27,15 +27,11 @@ setup() {
   printf '{"upstream_version":"%s"}\n' "$installed_version" \
     > "$CLAUDE_CONFIG_DIR/cache/claudefuel-version.json"
 
-  # Mirror statusline.sh's CACHE_SUFFIX derivation to locate caches.
-  config_hash=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
-  USAGE_CACHE="/tmp/claude/statusline-usage-cache-${config_hash}.json"
-  ATTEMPT_FILE="/tmp/claude/statusline-usage-attempt-${config_hash}"
-  RETRYAFTER_FILE="/tmp/claude/statusline-usage-retryafter-${config_hash}"
-  USAGE_LOCK="/tmp/claude/statusline-usage-fetch-${config_hash}.lock"
-  PREPAID_CACHE="/tmp/claude/statusline-prepaid-cache-${config_hash}.json"
-  mkdir -p /tmp/claude
-  rm -rf "$USAGE_LOCK" 2>/dev/null
+  USAGE_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.json"
+  ATTEMPT_FILE="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.attempt"
+  RETRYAFTER_FILE="$CLAUDE_CONFIG_DIR/cache/claudefuel-retry-after"
+  USAGE_LOCK="$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.lock"
+  PREPAID_CACHE="$CLAUDE_CONFIG_DIR/cache/claudefuel-prepaid.json"
 
   # Seed a FRESH prepaid cache so the prepaid fetch never fires: these
   # tests count curl calls, and only the usage fetch may contribute.
@@ -82,8 +78,6 @@ EOF
 }
 
 teardown() {
-  rm -f "$USAGE_CACHE" "$ATTEMPT_FILE" "$RETRYAFTER_FILE" "$PREPAID_CACHE" 2>/dev/null
-  rm -rf "$USAGE_LOCK" 2>/dev/null
   unset FAKE_HTTP_STATUS FAKE_RETRY_AFTER FAKE_BODY
   [ -n "$CLAUDE_CONFIG_DIR" ] && [ -d "$CLAUDE_CONFIG_DIR" ] && rm -rf "$CLAUDE_CONFIG_DIR"
   [ -n "$FAKE_BIN" ] && [ -d "$FAKE_BIN" ] && rm -rf "$FAKE_BIN"
