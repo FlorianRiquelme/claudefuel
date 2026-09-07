@@ -1,7 +1,7 @@
 ---
 description: Restore the most recent claudefuel backup
 ---
-# claudefuel-skill: v0.4.6
+# claudefuel-skill: v0.5.0
 
 Restore the most recent `*.bak-<UTC-timestamp>` of each install-managed artifact, in atomic-bundle order. Use `$CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`.
 

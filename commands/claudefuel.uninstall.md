@@ -1,7 +1,7 @@
 ---
 description: Remove claudefuel from this Claude Code install
 ---
-# claudefuel-skill: v0.4.6
+# claudefuel-skill: v0.5.0
 
 Remove every install-managed claudefuel artifact and restore the user's `settings.json` to a state where `.statusLine` no longer references this script. Use `$CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`.
 
@@ -40,6 +40,7 @@ for name in update doctor rollback uninstall configure why coach fleet; do
   rm -f "$target_dir/commands/claudefuel.${name}.md"
 done
 rm -rf "$target_dir"/cache/claudefuel-*
+rm -rf /tmp/claude/statusline-*   # caches left behind by releases before 0.5.0
 rmdir "$target_dir/cache" 2>/dev/null  # only succeeds if empty
 ```
 

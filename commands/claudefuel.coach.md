@@ -1,7 +1,7 @@
 ---
 description: Ask usage questions in plain language — answered from the current snapshot with a recommendation
 ---
-# claudefuel-skill: v0.4.6
+# claudefuel-skill: v0.5.0
 
 Answer the user's usage question in prose, reasoning from the bar's snapshot and the ADR-0004 math. The display stays dumb; the recommendation is conversational reasoning performed fresh on each invocation — **never** propose encoding advice rules into `statusline.sh` or any script. Read-only: the only command this skill runs is the snapshot dump.
 

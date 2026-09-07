@@ -1,7 +1,7 @@
 ---
 description: Explain the bar's current numbers — annotated snapshot with the full derivation chain
 ---
-# claudefuel-skill: v0.4.6
+# claudefuel-skill: v0.5.0
 
 Show-your-work view of the bar's current state. Annotate every number and every gate decision against the derivation chain documented in ADR-0004. Read-only: do not fetch anything, do not modify any file. The snapshot is the only input.
 

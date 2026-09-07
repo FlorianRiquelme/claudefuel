@@ -1,7 +1,7 @@
 ---
 description: Show every known profile's cached usage at a glance (fleet view)
 ---
-# claudefuel-skill: v0.4.6
+# claudefuel-skill: v0.5.0
 
 Render a compact fleet table of every Claude Code profile claudefuel has rendered recently, read from the per-profile usage caches already on disk. Strictly read-only: never fetch usage for a profile that isn't active in this terminal — only show what is already cached, and always show how old each snapshot is. Use `$CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`, as `$target_dir`.
 
