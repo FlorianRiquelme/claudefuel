@@ -135,16 +135,49 @@ run_bar() {
   [[ "$output" != *"✚ /claudefuel.doctor"* ]]
 }
 
-@test "auth failure, no cache: line 2 reads ⊘ ✚ /claudefuel.doctor" {
-  # No usage cache and no credentials reachable from the temp profile.
+@test "expired credentials, no cache: line 2 reads ⊘ ✚ /claudefuel.doctor" {
+  # A subscriber whose stored token has lapsed: no usage cache, a
+  # credentials file exists but its access token expired an hour ago.
   # A failed gauge must read FAILED — not render silence.
   rm -f "$USAGE_CACHE"
+  printf '{"claudeAiOauth":{"accessToken":"stale","expiresAt":%s}}' \
+    "$(( ($(date +%s) - 3600) * 1000 ))" > "$CLAUDE_CONFIG_DIR/.credentials.json"
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p')
 
   [[ "$line2" == *"⊘"* ]]
   [[ "$line2" == *"✚ /claudefuel.doctor"* ]]
+}
+
+@test "no subscription credentials anywhere: bar stays silent (no ⊘ nag)" {
+  # API-key / Bedrock / Vertex auth has no rate limits and no OAuth blob in
+  # any store. A permanent ⊘ would be a false alarm; lines 2-3 simply do
+  # not render. (Env var, credentials file, keychain and secret-tool are
+  # all absent for the temp profile.)
+  rm -f "$USAGE_CACHE" "$CLAUDE_CONFIG_DIR/.credentials.json"
+
+  output=$(run_bar)
+
+  [[ "$output" != *"✚ /claudefuel.doctor"* ]]
+  [[ "$output" != *"⊘"* ]]
+  [ "$(printf '%s' "$output" | wc -l | tr -d ' ')" -eq 0 ]
+}
+
+@test "failure class persists between attempts — the trailhead does not blink" {
+  # First render: expired credentials → ⊘ and an attempt marker. Second
+  # render inside the attempt window makes no fetch, but must still show
+  # the same trailhead (persisted failure class) rather than an empty row.
+  rm -f "$USAGE_CACHE"
+  printf '{"claudeAiOauth":{"accessToken":"stale","expiresAt":%s}}' \
+    "$(( ($(date +%s) - 3600) * 1000 ))" > "$CLAUDE_CONFIG_DIR/.credentials.json"
+
+  run_bar >/dev/null
+  [ -s "$CLAUDE_CONFIG_DIR/cache/claudefuel-usage.failure" ]
+  second=$(run_bar)
+  line2=$(printf '%s' "$second" | sed -n '2p')
+
+  [[ "$line2" == *"⊘ ✚ /claudefuel.doctor"* ]]
 }
 
 @test "failure trailhead does not grow bar height (≤2 lines, exit 0)" {

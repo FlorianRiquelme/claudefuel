@@ -1,7 +1,7 @@
 ---
 description: Edit claudefuel's user config conversationally — describe the look you want, see a rendered before/after, approve, done
 ---
-# claudefuel-skill: v0.4.6
+# claudefuel-skill: v0.5.0
 
 > **Scope:** minor tweaks only — color thresholds, segment ordering, segment show/hide, theme presets, reset display (ADR-0003). Anything richer (custom segments, data sources, scripts, colors beyond the two themes) is out of scope: decline citing ADR-0003 **and offer the nearest in-scope alternative** (e.g. "custom red color" → "I can't change the palette, but `mono` removes hues entirely, or I can move when red kicks in"). The bar reads `claudefuel.json` every render and merges it over baked-in defaults; missing file = pure defaults; malformed file = defaults win, the bar never breaks over config.
 
@@ -31,7 +31,7 @@ Presets are expanded by *this skill* into concrete schema-v1 keys at write time 
 | "calmer", "less alarming", "stop yelling at me" | raise `color_thresholds` (e.g. 70/85/95) — show current values first |
 | "warn me earlier", "more cautious" | lower `color_thresholds` (e.g. 40/60/80) |
 | "minimal", "less clutter", "just the essentials" | **preset `minimal`**: `hide: ["thinking","effort","profile","extra","drift","session","activity"]` — warn: hiding `drift` silences release notices |
-| "what is Claude doing", "live activity", "hide the spinner" | show/hide `activity` (`▸ Bash 12s` from the transcript tail) |
+| "what is Claude doing", "live activity", "hide the spinner" | show/hide `activity` (`⋯ Bash 12s` from the transcript tail) |
 | "which session is this", "label my panes" | show/hide `session`; suggest `/rename` to give the session a real name |
 | "everything", "back to normal", "reset" | delete overrides — restore defaults (`{"version":1}` or remove the file) |
 | "no colors", "colorblind", "accessible", "grayscale" | `theme: "mono"` (structural alarms carry severity without hue) |
@@ -56,7 +56,7 @@ All keys optional; absent keys use the default. Write **sparse**: `"version": 1`
 | `reset_display` | `"clock"` | Line 3 style: `"clock"` (`↻ 5:30pm`) or `"countdown"` (`↻ in 42m`). |
 | `glyphs` | `"unicode"` | `"ascii"` maps every glyph to an ASCII stand-in (`●`→`#`, `▸`→`>`, …) for fonts/terminals that render boxes. |
 | `hyperlinks` | `true` | OSC 8 clickable cells (reset → usage page, extra → billing, `↗` → releases, `#N` → the PR). Auto-gated to terminals that render them; `false` disables outright. |
-| `segments.order.line1` | `["model","session","ctx","thinking","effort","agent","activity","pr","drift"]` | Line 1 order. `session` = identity chip (`◈ name`), `agent` = subagent badge, `activity` = live tool call (`▸ Bash 12s`), `pr` = clickable `#N` chip with review-state glyph (`✓`/`◌`/`✗`/`◇`). |
+| `segments.order.line1` | `["model","session","ctx","thinking","effort","agent","activity","pr","drift"]` | Line 1 order. `session` = identity chip (`◈ name`), `agent` = subagent badge, `activity` = live tool call (`⋯ Bash 12s`), `pr` = clickable `#N` chip with review-state glyph (`✓`/`◌`/`✗`/`◇`). |
 | `segments.order.columns` | `["5h","7d","extra"]` | Column order for Lines 2 **and** 3 (Line 3 mirrors Line 2). |
 | `segments.hide` | `[]` | Any order token above, plus hide-only `"profile"` (the `[name]` badge), `"cap_eta"` (the `~cap` range, ADR-0004), `"projection"` (the `→N%` landing prediction on the 5h cell), and `"sessions"` (the `⧉ N` shared-window session count). |
 

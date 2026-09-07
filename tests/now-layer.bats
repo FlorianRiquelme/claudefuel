@@ -95,10 +95,10 @@ EOF
   [[ "$line1" != *"agent:"* ]]
 }
 
-@test "activity: pending tool_use renders '▸ <tool> <age>'" {
+@test "activity: pending tool_use renders '⋯ <tool> <age>'" {
   write_pending_transcript 12
   line1=$(render_line1 ",\"transcript_path\":\"$TRANSCRIPT\"")
-  [[ "$line1" == *"▸ Bash 12s"* ]]
+  [[ "$line1" == *"⋯ Bash 12s"* ]]
 }
 
 @test "activity: a resolved tool call renders nothing (it is no longer 'now')" {
@@ -107,13 +107,13 @@ EOF
 {"type":"user","timestamp":"$(iso $((NOW - 10)))","message":{"content":[{"type":"tool_result","tool_use_id":"a2"}]}}
 EOF
   line1=$(render_line1 ",\"transcript_path\":\"$TRANSCRIPT\"")
-  [[ "$line1" != *"▸ Bash"* ]]
+  [[ "$line1" != *"⋯ Bash"* ]]
 }
 
 @test "activity: dormant once the pending call is older than 10 minutes" {
   write_pending_transcript 700
   line1=$(render_line1 ",\"transcript_path\":\"$TRANSCRIPT\"")
-  [[ "$line1" != *"▸ Bash"* ]]
+  [[ "$line1" != *"⋯ Bash"* ]]
 }
 
 @test "activity: malformed or missing transcript renders nothing and exits 0" {
@@ -133,7 +133,7 @@ EOF
   printf '{"version":1,"segments":{"hide":["activity"]}}' \
     > "$CLAUDE_CONFIG_DIR/claudefuel.json"
   line1=$(render_line1 ",\"transcript_path\":\"$TRANSCRIPT\"")
-  [[ "$line1" != *"▸ Bash"* ]]
+  [[ "$line1" != *"⋯ Bash"* ]]
 }
 
 @test "new tokens are registered: validate-config accepts session/agent/activity without warnings" {

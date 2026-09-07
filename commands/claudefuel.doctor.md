@@ -1,7 +1,7 @@
 ---
 description: Verify claudefuel install health
 ---
-# claudefuel-skill: v0.4.6
+# claudefuel-skill: v0.5.0
 
 Run a non-destructive health check across the install. Report each item pass/fail without making changes. Use `$CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`.
 
@@ -74,7 +74,7 @@ Check 8 proves the stdin path; check 6's sample (no `rate_limits`) exercises the
 
 If the bar sent the user here via a `✚ /claudefuel.doctor` trailhead, the glyph in front of it names the failure class:
 
-- `⊘` — credentials missing or expired. The bar is read-only on credentials and never refreshes tokens itself; Claude Code refreshes them on its own schedule, so this usually clears after the next prompt. If it persists, the user should re-authenticate with `/login`.
+- `⊘` — a subscription token exists but has expired. The bar is read-only on credentials and never refreshes tokens itself; Claude Code refreshes them on its own schedule, so this usually clears after the next prompt. If it persists, the user should re-authenticate with `/login`. (Accounts with no OAuth credentials in any store — API key, Bedrock, Vertex — get no trailhead: rate limits do not apply to them, so lines 2–3 stay off by design.)
 - `⚠` — usage API unreachable (network down or request failed). Check connectivity; the bar recovers on its own once a fetch succeeds.
 - `?` — missing dependency (`jq` or `curl` not on `PATH`). Maps to check 5 above.
 

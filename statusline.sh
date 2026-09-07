@@ -1,8 +1,8 @@
 #!/bin/bash
-# claudefuel: v0.4.6
+# claudefuel: v0.5.0
 # Claude Code Status Line — Multi-Account Aware
 #
-# Line 1: [profile] Model | ◈ session | ctx <bar> <used>/<total> | thinking: on/off | effort: <level> | agent: <name> | ▸ <tool> <age> | #N ◌ | ↗ /claudefuel.update
+# Line 1: [profile] Model | ◈ session | ctx <bar> <used>/<total> | thinking: on/off | effort: <level> | agent: <name> | ⋯ <tool> <age> | #N ◌ | ↗ /claudefuel.update
 # Line 2: 5h: <bar> % [→N%] [·age] (or ~<left> ×<ratio> when burning hot) | 7d: <bar> % | extra: <currency><balance> [·age] | ⧉ N | ⇄ <profile> <pct>% (<age>)
 # Line 3: ↻ <time> · ~cap <range> · slow ≤<ratio>× · ⚓ <gap> | ↻ <datetime>
 #
@@ -1104,7 +1104,7 @@ segment_agent() {
     printf '%s' "agent: ${cyan}${agent_name}${reset}"
 }
 
-# Live activity — `▸ <tool> <age>`: the most recent tool_use in the
+# Live activity — `⋯ <tool> <age>`: the most recent tool_use in the
 # transcript tail that has no matching tool_result yet (i.e. what Claude
 # is doing right now), plus elapsed time since it started. Best-effort
 # by doctrine: the transcript JSONL has no public format spec, so every
@@ -1133,7 +1133,7 @@ segment_activity() {
 
     local tool="${pending%%$'\t'*}" ts="${pending#*$'\t'}"
     [ -n "$tool" ] || return 0
-    local chip="▸ ${tool}"
+    local chip="⋯ ${tool}"
     if [ -n "$ts" ]; then
         local epoch elapsed
         epoch=$(iso_to_epoch "$ts")
@@ -1234,6 +1234,25 @@ token_from_blob() {
     printf '%s' "$tok"
 }
 
+# True when some credential store holds an OAuth blob at all (expired or
+# not). Distinguishes "subscriber whose token lapsed" (worth a ⊘) from
+# "no subscription credentials anywhere" (API key / Bedrock / Vertex: rate
+# limits do not apply, so the bar stays silent rather than nagging).
+oauth_credentials_present() {
+    [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && return 0
+    [ -s "$config_dir/.credentials.json" ] && return 0
+    if command -v security >/dev/null 2>&1; then
+        local acct
+        for acct in "$(whoami)" "Claude Code"; do
+            security find-generic-password -s "$(keychain_service)" -a "$acct" >/dev/null 2>&1 && return 0
+        done
+    fi
+    if command -v secret-tool >/dev/null 2>&1; then
+        [ -n "$(timeout 2 secret-tool lookup service "$(keychain_service)" 2>/dev/null)" ] && return 0
+    fi
+    return 1
+}
+
 get_oauth_token() {
     # 1. Explicit env var override (no expiry check possible)
     if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
@@ -1302,6 +1321,11 @@ attempt_file="$cache_dir/claudefuel-usage.attempt"
 # (absolute epoch seconds), shared by every endpoint on the host.
 retryafter_file="$cache_dir/claudefuel-retry-after"
 usage_lock_dir="$cache_dir/claudefuel-usage.lock"
+# Last failure class (dep|auth|net) from a first-render fetch that produced
+# no cache. Persisted so the ✚ /claudefuel.doctor trailhead stays put
+# between attempts instead of flickering once per cadence; cleared by the
+# next successful fetch.
+failure_file="$cache_dir/claudefuel-usage.failure"
 # Cadence between OAuth usage calls. 5 min on the fallback path (the bars
 # depend on it); 30 min when stdin rate_limits already drive the bars and
 # the fetch only enriches the extra column — the endpoint is rate-limited
@@ -1340,6 +1364,7 @@ if [ -n "$demo_state" ]; then
     cache_file="/dev/null"
     attempt_file="/dev/null"
     retryafter_file="/dev/null"
+    failure_file="/dev/null"
 fi
 
 # Fetch /api/oauth/usage and atomically publish it to the usage cache
@@ -1362,7 +1387,7 @@ claudefuel_fetch_usage() {
     http_status=$(awk 'toupper($1) ~ /^HTTP/ {print $2}' "$hdr_file" 2>/dev/null | tail -n1)
     if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
         echo "$response" > "$cache_file.tmp.$$" && mv "$cache_file.tmp.$$" "$cache_file"
-        rm -f "$retryafter_file" 2>/dev/null  # recovered — clear the cooldown
+        rm -f "$retryafter_file" "$failure_file" 2>/dev/null  # recovered — clear cooldown + failure class
         echo "$response"
     elif [ "$http_status" = "429" ]; then
         # Record when we're allowed to try again. Retry-After is
@@ -1459,12 +1484,25 @@ if $needs_refresh && $should_attempt && [ -z "$CLAUDEFUEL_OFFLINE" ] \
             if [ -n "$token" ] && [ "$token" != "null" ]; then
                 usage_data=$(claudefuel_fetch_usage "$token")
                 [ -z "$usage_data" ] && usage_failure="net"
+            elif oauth_credentials_present; then
+                usage_failure="auth"      # a subscriber whose token lapsed
             else
-                usage_failure="auth"
+                usage_failure="none"      # no subscription credentials: stay silent
             fi
         fi
         rm -rf "$usage_lock_dir" 2>/dev/null
+        # Remember the outcome for the renders between attempts.
+        if [ -n "$usage_failure" ]; then
+            printf '%s' "$usage_failure" > "$failure_file" 2>/dev/null
+        fi
     fi
+fi
+
+# Between attempts, a first-render failure with still no cache keeps its
+# trailhead: reuse the persisted class rather than blinking it off.
+if [ -z "$usage_data" ] && [ -z "$usage_failure" ] && [ "$usage_source" != "stdin" ] \
+    && [ -z "$demo_state" ] && [ -s "$failure_file" ]; then
+    usage_failure=$(<"$failure_file")
 fi
 
 # Honest instrument: data painted from a stale cache carries an age marker
@@ -2151,10 +2189,12 @@ if [ "$usage_source" = "stdin" ] \
         fi
     fi
 
-elif [ -n "$usage_failure" ]; then
+elif [ -n "$usage_failure" ] && [ "$usage_failure" != "none" ]; then
     # Failed gauge reads FAILED: no data to show and a known failure class.
     # One-glyph diagnosis + trailhead, mirroring the ↗ drift segment:
-    #   ⊘ auth (credentials missing/expired), ⚠ network, ? missing dependency.
+    #   ⊘ auth (a subscriber's credentials expired), ⚠ network, ? missing dependency.
+    # "none" (no subscription credentials at all) renders nothing: rate
+    # limits do not exist for API-key / Bedrock / Vertex auth.
     case "$usage_failure" in
         auth) fail_glyph="⊘" ;;
         net)  fail_glyph="⚠" ;;
@@ -2172,7 +2212,7 @@ if [ "$cfg_glyphs" = "ascii" ]; then
     cf_ascii() {
         sed -e 's/●/#/g; s/○/./g; s/▸/>/g; s/⚠/!/g; s/↻/@/g; s/⇄/=/g' \
             -e 's/◈/*/g; s/⧉/+/g; s/✚/+/g; s/→/>/g; s/⚓/\&/g; s/×/x/g' \
-            -e 's/·/./g; s/≤/</g; s/↗/^/g; s/✓/v/g; s/✗/x/g; s/◌/o/g; s/◇/-/g'
+            -e 's/·/./g; s/≤/</g; s/↗/^/g; s/⋯/~/g; s/✓/v/g; s/✗/x/g; s/◌/o/g; s/◇/-/g'
     }
     line1=$(printf '%s' "$line1" | cf_ascii)
     line2=$(printf '%s' "$line2" | cf_ascii)

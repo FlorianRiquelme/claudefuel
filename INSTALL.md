@@ -1,6 +1,6 @@
 # claudefuel — install / upgrade spec
 
-Version: `0.4.6`
+Version: `0.5.0`
 Canonical URL: `https://raw.githubusercontent.com/FlorianRiquelme/claudefuel/main/INSTALL.md`
 Source: `https://github.com/FlorianRiquelme/claudefuel`
 
@@ -127,7 +127,8 @@ Postcondition: every file that existed pre-install has a matching `*.bak-<TS>`.
 
 ### Step 6 — Create the drift cache directory
 
-- `mkdir -p ~/.claude/cache/`. Do not write any file inside — `statusline.sh` populates `claudefuel-version.json` at runtime.
+- `mkdir -p ~/.claude/cache/`. Do not write any file inside — `statusline.sh` populates it at runtime.
+- Releases before 0.5.0 kept their caches in the shared `/tmp/claude/`; remove those orphans: `rm -rf /tmp/claude/statusline-*` (a no-op on a fresh machine).
 - Postcondition: `[ -d ~/.claude/cache/ ]`.
 
 ### Step 7 — Patch `~/.claude/settings.json`
@@ -166,7 +167,7 @@ After Verify passes, explain to the user in chat the user-visible bar behaviors 
 
 - **Drift signal (`↗ /claudefuel.update`).** Appears on Line 1 only when an upstream release is available. Invoking it routes to the upgrade skill.
 - **Cap-ETA (`~cap HH:MM-HH:MM`).** Appears on Line 3 next to the 5-hour `↻ <time>` reset cell only when the user is on track to hit the 5-hour cap before reset. A rough estimate (tilde + range — never a precise time) derived from average burn rate over the current window. Dormant when healthy; the cell shows only `↻ <time>` until burn rate exceeds reset-pace.
-- **The "Now" layer.** Line 1 carries a session identity chip (`◈ <name>`, stable per-session color — `/rename` a session to label it), an `agent: <name>` badge inside subagent sessions, and a live-activity chip (`▸ Bash 12s` — the tool call currently running, from the transcript tail). Activity is best-effort and silently absent when the transcript can't be parsed; all three are hide-able via `/claudefuel.configure` (`session`, `agent`, `activity`). Subagent panel rows render through the same script (`--subagent`).
+- **The "Now" layer.** Line 1 carries a session identity chip (`◈ <name>`, stable per-session color — it renders only once the session has a name via `claude --name` or `/rename`), an `agent: <name>` badge inside subagent sessions, and a live-activity chip (`⋯ Bash 12s` — the tool call currently running, from the transcript tail). Activity is best-effort and silently absent when the transcript can't be parsed; all three are hide-able via `/claudefuel.configure` (`session`, `agent`, `activity`). Subagent panel rows render through the same script (`--subagent`).
 - **Live tick.** The bar re-renders every 5 seconds (`statusLine.refreshInterval`), so time-based cells move on their own while the session idles. The natural pairing is `reset_display: "countdown"` (`↻ in 42m` instead of `↻ 5:53pm`) — offer it once here and point at `/claudefuel.configure` to switch; the default stays clock times.
 - **Consultation skills (`/claudefuel.why`, `/claudefuel.coach`).** `why` annotates the bar's current snapshot — burn rate vs reset-pace, the cap-ETA arithmetic, which visibility gates passed or failed, cache ages. `coach` answers usage questions in plain language ("can I finish this refactor before my 5h reset?") with a recommendation. Both read the machine-readable snapshot (`statusline.sh --snapshot`); the bar itself stays a dumb display.
 
