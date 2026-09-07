@@ -104,113 +104,43 @@ cap_range_width() {
   echo $(( ( $(mins_of "$high") - $(mins_of "$low") + 1440 ) % 1440 ))
 }
 
-@test "burn chip: time-at-pace + ratio replace the 5h percent while burning hot" {
-  # 55% used, 2h elapsed, 3h to reset. Burn rate 27.5%/h vs reset-pace
-  # 20%/h → ratio ×1.4. Time-at-pace = 45% ÷ 27.5%/h ≈ 1h38m.
+@test "burning hot: the 5h percent stays visible, no chip on line 2" {
+  # 55% used, 2h elapsed, 3h to reset — over pace. Line 2 states where
+  # you are (the percent); the prediction lives on line 3 as ~cap only.
   seed_usage_cache 55 10800
 
   output=$(run_bar)
   col1=$(col1_of_line "$output" 2)
+  line3=$(printf '%s' "$output" | sed -n '3p')
 
-  [[ "$col1" == *"~1h38m"* ]]
-  [[ "$col1" == *"×1.4"* ]]
-  [[ "$col1" != *"55%"* ]]
+  [[ "$col1" == *"55%"* ]]
+  [[ "$col1" != *"×"* ]]
+  [[ "$col1" != *"~"* ]]
+  [[ "$line3" == *"~cap"* ]]
 }
 
-@test "ratio math: 60% at 2h elapsed renders ×1.5" {
-  # rate 30%/h ÷ reset-pace 20%/h = 1.5; time-at-pace 40 ÷ 30%/h = 1h20m.
-  seed_usage_cache 60 10800
-
-  output=$(run_bar)
-  col1=$(col1_of_line "$output" 2)
-
-  [[ "$col1" == *"×1.5"* ]]
-  [[ "$col1" == *"~1h20m"* ]]
-}
-
-@test "dormant ≤1.0: under-pace window keeps the plain percent, no chip" {
-  # 30% at 2h elapsed → ratio 0.75. Chip must be dormant; percent shows.
-  # 7d bumped non-nominal (55%) so the calm-cockpit collapse (both windows
-  # <50%) doesn't hide line 2 entirely — unrelated to what's under test.
+@test "under pace: plain percent, no cap-ETA" {
+  # 30% at 2h elapsed → under reset-pace. 7d at 55% keeps line 2 busy.
   seed_usage_cache 30 10800 55
 
   output=$(run_bar)
   col1=$(col1_of_line "$output" 2)
+  line3=$(printf '%s' "$output" | sed -n '3p')
 
   [[ "$col1" == *"30%"* ]]
-  [[ "$col1" != *"×"* ]]
-  [[ "$col1" != *"~"* ]]
-}
-
-@test "noise floor: chip dormant below 10% even at a huge momentary ratio" {
-  # 8% used 5min into the window → ratio ~4.8, but below the noise floor
-  # a single heavy prompt dominates the rate (ADR-0004). Percent shows.
-  # 7d bumped non-nominal (55%) so calm-cockpit collapse doesn't hide
-  # line 2 entirely — unrelated to what's under test.
-  seed_usage_cache 8 17700 55
-
-  output=$(run_bar)
-  col1=$(col1_of_line "$output" 2)
-
-  [[ "$col1" == *"8%"* ]]
-  [[ "$col1" != *"×"* ]]
-}
-
-@test "5h-only scope: the 7d cell never carries a chip" {
-  # 7d burning hot too (80%, 1 day to reset) — chip is 5h-only.
-  seed_usage_cache 55 10800 80 86400
-
-  output=$(run_bar)
-  line2=$(printf '%s' "$output" | sed -n '2p')
-  col2=$(printf '%s' "$line2" | awk -F'|' '{print $2}')
-
-  [[ "$col2" == *"80%"* ]]
-  [[ "$col2" != *"×"* ]]
-}
-
-@test "steer-to: cap-ETA carries the slow-down instruction" {
-  # Remaining 45% over 3h ÷ reset-pace = 0.75, floored to one decimal
-  # → "slow ≤0.7×" (never rounds up: the instruction must stay safe).
-  seed_usage_cache 55 10800
-
-  output=$(run_bar)
-  line3=$(printf '%s' "$output" | sed -n '3p')
-
-  [[ "$line3" == *"~cap"* ]]
-  [[ "$line3" == *"slow ≤0.7×"* ]]
-}
-
-@test "stranding gap: dead time between projected cap and reset" {
-  # cap-ETA ≈ now+1h38m, reset at now+3h → gap ≈ 1h21m of dead time.
-  seed_usage_cache 55 10800
-
-  output=$(run_bar)
-  line3=$(printf '%s' "$output" | sed -n '3p')
-
-  [[ "$line3" == *"⚓ 1h21m"* ]]
-}
-
-@test "stranding gap dormant under 5min: cap-ETA shows, anchor does not" {
-  # 75% used, 1h17.5m to reset, 3h42.5m elapsed → cap lands ~3min before
-  # reset. Sub-5min stranding isn't actionable — anchor must stay hidden.
-  seed_usage_cache 75 4650
-
-  output=$(run_bar)
-  line3=$(printf '%s' "$output" | sed -n '3p')
-
-  [[ "$line3" == *"~cap"* ]]
-  [[ "$line3" != *"⚓"* ]]
-}
-
-@test "steer-to and anchor are gated on cap-ETA: absent when healthy" {
-  seed_usage_cache 30 10800
-
-  output=$(run_bar)
-  line3=$(printf '%s' "$output" | sed -n '3p')
-
   [[ "$line3" != *"~cap"* ]]
+}
+
+@test "cap-ETA is range-only: no steer-to, no stranding anchor, no ratio" {
+  seed_usage_cache 55 10800
+
+  output=$(run_bar)
+  line3=$(printf '%s' "$output" | sed -n '3p')
+
+  [[ "$line3" == *"~cap"* ]]
   [[ "$line3" != *"slow"* ]]
   [[ "$line3" != *"⚓"* ]]
+  [[ "$line3" != *"×"* ]]
 }
 
 @test "horizon band: near cap the range narrows to the ±5min floor" {
@@ -259,7 +189,7 @@ cap_range_width() {
   [[ "$col1" =~ [0-9]:[0-9][0-9][ap]m ]]
 }
 
-@test "burning state still ≤3 lines (chip and extensions are inline)" {
+@test "burning state still ≤3 lines (cap-ETA is inline)" {
   seed_usage_cache 55 10800
 
   output=$(run_bar)
@@ -268,13 +198,13 @@ cap_range_width() {
   [ "$line_count" -le 2 ]
 }
 
-@test "line 2/3 pipes stay aligned when the chip widens col1" {
+@test "line 2/3 pipes stay aligned when cap-ETA widens col1" {
   seed_usage_cache 55 10800
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p')
   line3=$(printf '%s' "$output" | sed -n '3p')
-  # bash ${#} is character-aware (awk length() counts bytes for ●/⚓/×).
+  # bash ${#} is character-aware (awk length() counts bytes for ●/↻).
   col1_2="${line2%%|*}"
   col1_3="${line3%%|*}"
 

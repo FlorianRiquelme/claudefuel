@@ -58,10 +58,10 @@ line2_for() {
   [[ "$line2" != *"→"* ]]
 }
 
-@test "projection dormant when burning hot — the burn chip owns that story" {
-  # 50% at 2h elapsed (ratio exactly 1.25, rounds half-up to ×1.3): burn chip fires, no →.
+@test "projection dormant when burning hot — line 3 cap-ETA owns that story" {
+  # 50% at 2h elapsed (over pace): the percent shows plain, no →.
   line2=$(line2_for 50 10800)
-  [[ "$line2" == *"×1.3"* ]]
+  [[ "$line2" == *"50%"* ]]
   [[ "$line2" != *"→"* ]]
 }
 

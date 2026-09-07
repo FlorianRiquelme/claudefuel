@@ -97,7 +97,7 @@ Walk the user through what lit up, checking each off:
 
 1. **healthy**: green bars, `extra: $25.00`, plain `↻` reset times — no alarms.
 2. **warning**: yellow 5h bar (72%), orange 7d bar (55%) — hot colors, no projection alarms.
-3. **critical**: red `ctx` bar (95%) on line 1; `▸⚠` prefix with inverse-video burn chip (`~18m ×1.2`) on the 5h cell; `~cap HH:MM-HH:MM · slow ≤N.N× · ⚓` on line 3.
+3. **critical**: red `ctx` bar (95%) on line 1; `▸⚠` prefix with inverse-video `93%` on the 5h cell; `~cap HH:MM-HH:MM` next to the 5h reset on line 3.
 4. **stale**: `·9m` age markers on the 5h and extra cells plus the `⚠ updates ~HH:MM` warning.
 5. **offline**: `⚠ ✚ /claudefuel.doctor` trailhead in place of the usage rows.
 

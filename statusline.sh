@@ -3,8 +3,8 @@
 # Claude Code Status Line — Multi-Account Aware
 #
 # Line 1: [profile] Model | ◈ session | ctx <bar> <used>/<total> | thinking: on/off | effort: <level> | agent: <name> | ⋯ <tool> <age> | #N ◌ | ↗ /claudefuel.update
-# Line 2: 5h: <bar> % [→N%] [·age] (or ~<left> ×<ratio> when burning hot) | 7d: <bar> % | extra: <currency><balance> [·age] | ⧉ N | ⇄ <profile> <pct>% (<age>)
-# Line 3: ↻ <time> · ~cap <range> · slow ≤<ratio>× · ⚓ <gap> | ↻ <datetime>
+# Line 2: 5h: <bar> % [→N%] [·age] | 7d: <bar> % | extra: <currency><balance> [·age] | ⧉ N | ⇄ <profile> <pct>% (<age>)
+# Line 3: ↻ <time> · ~cap <range> | ↻ <datetime>
 #
 # Data sources, in order of preference:
 #   1. stdin `rate_limits` — Claude Code passes 5h/7d used_percentage and
@@ -27,9 +27,12 @@
 # missing dep). Lines 2-3 always render once data exists. Severity rides on
 # shape and weight, not hue alone: a window at ≥90% gets a ⚠ label prefix
 # and inverse-video value; the governing constraint — whichever window
-# would hit 100% first at the current burn rate — carries a ▸ marker
-# (stable layout, never reordered). The extra column renders only once
-# spend is live (>$0).
+# would hit 100% first at the current burn rate, once it is at least at
+# the orange threshold — carries a ▸ marker (stable layout, never
+# reordered). The extra column renders only once spend is live (>$0).
+# Line 2 states where you are; line 3 says when: the only prediction on
+# line 2 is →N% (projected landing at reset, under pace), the only one on
+# line 3 is ~cap (projected 100% time, over pace).
 #
 # Credentials are read-only: the script never refreshes or rewrites the
 # OAuth token. An expired token means "no fetch this render" — Claude Code
@@ -645,7 +648,7 @@ fi
 # config against every alarm state before anything is written.
 #   healthy  — green bars, live extra spend, all columns visible
 #   warning  — yellow 5h / orange 7d, no projection alarms
-#   critical — ⚠ escalation, burn chip, cap-ETA + steer-to, ▸ governing
+#   critical — ⚠ escalation, cap-ETA, ▸ governing
 #   stale    — OAuth-path bars with ·age marker + severe-staleness warning
 #   offline  — no data at all: the failure trailhead
 # The generalization of the doctor bulb-check; falls through to the
@@ -678,8 +681,8 @@ if [ "${1:-}" = "--demo" ]; then
             input='{"model":{"display_name":"Claude"},"session_id":"demo","context_window":{"context_window_size":200000,"current_usage":{"input_tokens":120000}},"thinking":{"enabled":true},"rate_limits":{"five_hour":{"used_percentage":72,"resets_at":1751503000},"seven_day":{"used_percentage":55,"resets_at":1751586400}}}'
             ;;
         critical)
-            # 5h 93% burning ×1.2 with 1h to reset: ⚠ + inverse video,
-            # burn chip, cap-ETA + steer-to, ▸ governing. ctx 95% red.
+            # 5h 93% burning hot with 1h to reset: ⚠ + inverse video,
+            # cap-ETA on line 3, ▸ governing. ctx 95% red.
             input='{"model":{"display_name":"Claude"},"session_id":"demo","context_window":{"context_window_size":200000,"current_usage":{"input_tokens":190000}},"thinking":{"enabled":true},"rate_limits":{"five_hour":{"used_percentage":93,"resets_at":1751503600},"seven_day":{"used_percentage":61,"resets_at":1751672800}}}'
             ;;
         stale|offline)
@@ -1785,44 +1788,11 @@ claudefuel_cap_epoch() {
     printf "%s" "$cap_eta"
 }
 
-# Burn chip — time-at-pace + normalized burn ratio for the 5h cell on
-# Line 2 (e.g. "~1h38m ×1.4"): time until projected 100% at the current
-# burn rate, and that rate as a multiple of reset-pace. Stateless: pure
-# function of one snapshot. Shares the cap-ETA gates (ADR-0004): dormant
-# when burn rate <= reset-pace (ratio ≤1.0 — you'll never hit the cap)
-# or pct_used < 10% (noise floor).
-# Usage: claudefuel_burn_chip <pct_used> <reset_at_epoch>
-# Echoes "~XhYYm ×N.N" or empty.
-claudefuel_burn_chip() {
-    local pct=$1
-    local reset_epoch=$2
-    local window_length=$((5 * 3600))
-
-    [ -z "$reset_epoch" ] && return 0
-    [ "$pct" -ge 10 ] 2>/dev/null || return 0
-
-    local window_started elapsed
-    window_started=$(( reset_epoch - window_length ))
-    elapsed=$(( now - window_started ))
-    [ "$elapsed" -gt 0 ] || return 0
-
-    # ratio > 1.0 ⟺ pct/elapsed > 100/window — exact in integers.
-    [ $(( pct * window_length )) -gt $(( 100 * elapsed )) ] || return 0
-
-    local time_to_cap ratio
-    time_to_cap=$(( (100 - pct) * elapsed / pct ))
-    # ratio to one decimal, rounded: tenths = pct*window*10 / (100*elapsed)
-    local r10=$(( (pct * window_length * 20 / (100 * elapsed) + 1) / 2 ))
-    ratio="$(( r10 / 10 )).$(( r10 % 10 ))"
-
-    printf "~%s ×%s" "$(format_duration "$time_to_cap")" "$ratio"
-}
-
 # End-of-window projection — `→N%`: where the 5h window lands at reset
 # if the current average pace holds (pct × window / elapsed). Stateless,
 # same snapshot algebra as the burn chip, and its exact complement:
-#   ratio > 1  → the burn chip + cap-ETA own the story (projection would
-#                just read →100%) — dormant here.
+#   ratio > 1  → line 3's cap-ETA owns the story (projection would just
+#                read →100%) — dormant here.
 #   ratio ≤ 1  → no cap coming, but where do I land? Renders when the
 #                projected landing crosses the yellow severity threshold
 #                (config-driven: a calmer ladder also calms this chip).
@@ -1843,7 +1813,7 @@ claudefuel_projection() {
     elapsed=$(( now - window_started ))
     [ "$elapsed" -gt 0 ] || return 0
 
-    # Burning hot (ratio > 1): dormant — the burn chip renders instead.
+    # Burning hot (ratio > 1): dormant — cap-ETA on line 3 renders instead.
     [ $(( pct * window_length )) -le $(( 100 * elapsed )) ] || return 0
 
     local projected
@@ -1857,15 +1827,8 @@ claudefuel_projection() {
 # Stateless: computed from a single snapshot (pct + reset epoch), no
 # samples persisted across renders. Renders only when burn rate exceeds
 # reset-pace AND pct_used >= 10%. See ADR-0004.
-# When it fires, two prescriptive extensions ride along (same snapshot
-# algebra, no extra gates of their own beyond the noted dormancies):
-#   slow ≤N.N× — steer-to: the pace multiple (vs reset-pace) that makes
-#                the remaining budget last until reset. Floored to one
-#                decimal so the instruction never overstates the allowance.
-#   ⚓ XhYYm    — stranding gap: dead time between projected cap and
-#                reset. Dormant under 5 minutes (not actionable).
 # Usage: claudefuel_cap_eta_segment <pct_used> <reset_at_epoch>
-# Echoes "~cap HH:MMxm-HH:MMxm · slow ≤N.N× · ⚓ XhYYm" or empty.
+# Echoes "~cap HH:MMxm-HH:MMxm" or empty.
 claudefuel_cap_eta_segment() {
     local pct=$1
     local reset_epoch=$2
@@ -1880,29 +1843,11 @@ claudefuel_cap_eta_segment() {
     # get wide ones (the fixed ±15min band claimed false precision
     # at long horizons and false vagueness at short ones).
     local time_to_cap=$(( cap_eta - now ))
-    local half_band
-    half_band=$(( time_to_cap * 15 / 100 ))
+    local half_band=$(( time_to_cap * 15 / 100 ))
     [ "$half_band" -lt 300 ] && half_band=300
 
     local cap_low=$(( cap_eta - half_band )) cap_high=$(( cap_eta + half_band ))
-    local segment
-    segment="~cap $(format_clock_time "$cap_low")-$(format_clock_time "$cap_high")"
-
-    # Steer-to: floor((100-pct)/remaining ÷ reset-pace, 1 decimal).
-    # Always < 1.0 when cap-ETA fires, so it is always a slow-down.
-    local remaining=$(( reset_epoch - now ))
-    local steer
-    local s10=$(( (100 - pct) * window_length * 10 / (100 * remaining) ))
-    steer="$(( s10 / 10 )).$(( s10 % 10 ))"
-    segment+=" · slow ≤${steer}×"
-
-    # Stranding gap: dormant under 5 minutes.
-    local gap=$(( reset_epoch - cap_eta ))
-    if [ "$gap" -ge 300 ]; then
-        segment+=" · ⚓ $(format_duration "$gap")"
-    fi
-
-    printf "%s" "$segment"
+    printf "~cap %s-%s" "$(format_clock_time "$cap_low")" "$(format_clock_time "$cap_high")"
 }
 
 # Format a cache age in seconds as a compact marker value ("9m", "5h").
@@ -1964,22 +1909,14 @@ column_5h() {
         escalate=true
     fi
 
-    # Burn chip: when burning hot, lead with time-at-pace + ratio and
-    # demote the percent to the bar fill alone. Dormant otherwise (plain
-    # percent shows). The >=90% escalation wraps whichever value is shown.
-    local burn_chip_plain col1_value_plain col1_pct_str
-    burn_chip_plain=$(claudefuel_burn_chip "$five_hour_pct" "$five_hour_reset_epoch")
-    if [ -n "$burn_chip_plain" ]; then
-        col1_value_plain="$burn_chip_plain"
-    else
-        col1_value_plain="${five_hour_pct}%"
-    fi
+    # The percent is always the value shown; the >=90% escalation wraps it.
+    local col1_value_plain="${five_hour_pct}%" col1_pct_str
 
-    # End-of-window projection (→N% at reset) — only meaningful when the
-    # burn chip is dormant (ratio ≤ 1); its own gates live in
+    # End-of-window projection (→N% at reset) — dormant when burning hot
+    # (line 3's ~cap owns that story); its gates live in
     # claudefuel_projection. Hide-only token "projection".
     local proj_plain=""
-    if [ -z "$burn_chip_plain" ] && ! segment_hidden projection; then
+    if ! segment_hidden projection; then
         proj_plain=$(claudefuel_projection "$five_hour_pct" "$five_hour_reset_epoch")
     fi
     if $escalate; then
@@ -2024,7 +1961,7 @@ column_5h() {
         col_reset+=" ${dim}· ${cap_eta_plain}${reset}"
     fi
 
-    # Widen col1 when cap-ETA or the burn chip grows a cell — keeps Line 2/3 pipes aligned.
+    # Widen col1 when cap-ETA or the projection grows a cell — keeps Line 2/3 pipes aligned.
     local col1w_actual=$col1w
     [ "${#col1_reset_plain}" -gt "$col1w_actual" ] && col1w_actual="${#col1_reset_plain}"
     [ "$col1_bar_vis_len" -gt "$col1w_actual" ] && col1w_actual="$col1_bar_vis_len"
@@ -2128,9 +2065,15 @@ if [ "$usage_source" = "stdin" ] \
     # ---- Governing constraint (▸) — whichever window would hit 100%
     # first at the current burn rate, dive-computer style. A marker, not
     # a reordering: the layout stays stable for spatial memory. Empty
-    # when no window is projected to cap before its own reset.
-    five_hour_cap=$(claudefuel_cap_epoch "$five_hour_pct" "$five_hour_reset_epoch" $((5 * 3600)))
-    seven_day_cap=$(claudefuel_cap_epoch "$seven_day_pct" "$seven_day_reset_epoch" $((7 * 24 * 3600)))
+    # when no window is projected to cap before its own reset. A window
+    # is eligible only from the orange threshold up: at steady pace a
+    # window projects to ~100% at reset by definition, and a marker that
+    # is on all day marks nothing.
+    five_hour_cap="" seven_day_cap=""
+    [ "$five_hour_pct" -ge "$cfg_th_orange" ] 2>/dev/null \
+        && five_hour_cap=$(claudefuel_cap_epoch "$five_hour_pct" "$five_hour_reset_epoch" $((5 * 3600)))
+    [ "$seven_day_pct" -ge "$cfg_th_orange" ] 2>/dev/null \
+        && seven_day_cap=$(claudefuel_cap_epoch "$seven_day_pct" "$seven_day_reset_epoch" $((7 * 24 * 3600)))
     governing=""
     if [ -n "$five_hour_cap" ] && [ -n "$seven_day_cap" ]; then
         if [ "$five_hour_cap" -le "$seven_day_cap" ]; then governing="5h"; else governing="7d"; fi
@@ -2211,7 +2154,7 @@ fi
 if [ "$cfg_glyphs" = "ascii" ]; then
     cf_ascii() {
         sed -e 's/●/#/g; s/○/./g; s/▸/>/g; s/⚠/!/g; s/↻/@/g; s/⇄/=/g' \
-            -e 's/◈/*/g; s/⧉/+/g; s/✚/+/g; s/→/>/g; s/⚓/\&/g; s/×/x/g' \
+            -e 's/◈/*/g; s/⧉/+/g; s/✚/+/g; s/→/>/g' \
             -e 's/·/./g; s/≤/</g; s/↗/^/g; s/⋯/~/g; s/✓/v/g; s/✗/x/g; s/◌/o/g; s/◇/-/g'
     }
     line1=$(printf '%s' "$line1" | cf_ascii)

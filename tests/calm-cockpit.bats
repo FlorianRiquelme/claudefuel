@@ -185,9 +185,9 @@ line_count() {
 
 @test "governing: ▸ marks 7d when only 7d projects to cap before reset" {
   # 5h: 20% under pace — no cap.
-  # 7d: 40% one day into the window (6d left) — burn 40%/d projects cap
-  # at +1.5d, well before the 6d reset.
-  seed_usage_cache 20 10800 40 518400
+  # 7d: 55% one day into the window (6d left) — burn 55%/d projects cap
+  # at +0.8d, well before the 6d reset, and 55% clears the orange gate.
+  seed_usage_cache 20 10800 55 518400
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p' | strip_ansi)
@@ -198,8 +198,8 @@ line_count() {
 }
 
 @test "governing: both capping -> ▸ only on the earlier window (5h)" {
-  # 5h caps at +2h; 7d caps at +1.5d. The 5h window governs.
-  seed_usage_cache 50 10800 40 518400
+  # 5h caps at +2h; 7d caps at +0.8d. The 5h window governs.
+  seed_usage_cache 50 10800 55 518400
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p' | strip_ansi)
@@ -210,7 +210,7 @@ line_count() {
 }
 
 @test "governing: layout is stable — 5h column stays first even when 7d governs" {
-  seed_usage_cache 20 10800 40 518400
+  seed_usage_cache 20 10800 55 518400
 
   output=$(run_bar)
   line2=$(printf '%s' "$output" | sed -n '2p' | strip_ansi)
@@ -218,13 +218,28 @@ line_count() {
   [[ "$col1" == *"5h:"* ]]
 }
 
-@test "governing: a projected cap defeats nominal collapse even below 50%" {
-  # 7d: 40% after 1 day — below the 50% hue threshold but on pace to cap
-  # before reset. The bar must grow; collapse would hide a live risk.
+@test "governing: below the orange threshold a projected cap earns no ▸" {
+  # 7d: 40% after 1 day — on pace to cap before reset, but under the
+  # orange threshold (50). At steady pace every window projects to ~100%
+  # at reset, so a marker here would be on all day and mark nothing.
   seed_usage_cache 20 10800 40 518400
 
   output=$(run_bar)
+  plain=$(printf '%s' "$output" | strip_ansi)
+  [[ "$plain" != *"▸"* ]]
   [ "$(line_count "$output")" -eq 2 ]
+}
+
+@test "governing: the orange gate follows color_thresholds.orange" {
+  # Same 40% 7d fixture, but the user lowered orange to 30 — now eligible.
+  printf '{"version":1,"color_thresholds":{"orange":30,"yellow":70,"red":90}}' \
+    > "$CLAUDE_CONFIG_DIR/claudefuel.json"
+  seed_usage_cache 20 10800 40 518400
+
+  output=$(run_bar)
+  line2=$(printf '%s' "$output" | sed -n '2p' | strip_ansi)
+  col2=$(printf '%s' "$line2" | awk -F'|' '{print $2}')
+  [[ "$col2" == *"▸7d:"* ]]
 }
 
 # ---- Extra column: hidden until spend is live ----

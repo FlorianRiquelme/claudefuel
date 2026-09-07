@@ -97,12 +97,13 @@ demo() {
   [[ "$out" != *"⚠"* ]]
 }
 
-@test "critical: escalation, burn chip, cap-ETA, governing marker" {
+@test "critical: escalation, cap-ETA, governing marker" {
   out=$(demo critical | strip_ansi)
   [[ "$out" == *"▸⚠5h:"* ]]
-  [[ "$out" == *"×1.2"* ]]
+  [[ "$out" == *"93%"* ]]
   [[ "$out" == *"~cap"* ]]
-  [[ "$out" == *"slow ≤"* ]]
+  [[ "$out" != *"slow ≤"* ]]
+  [[ "$out" != *"×"* ]]
 }
 
 @test "stale: age markers and the severe-staleness warning" {
