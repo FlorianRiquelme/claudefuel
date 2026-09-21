@@ -30,9 +30,10 @@ Presets are expanded by *this skill* into concrete schema-v1 keys at write time 
 |---|---|
 | "calmer", "less alarming", "stop yelling at me" | raise `color_thresholds` (e.g. 70/85/95) — show current values first |
 | "warn me earlier", "more cautious" | lower `color_thresholds` (e.g. 40/60/80) |
-| "minimal", "less clutter", "just the essentials" | **preset `minimal`**: `hide: ["thinking","effort","profile","extra","drift","session","activity"]` — warn: hiding `drift` silences release notices |
+| "minimal", "less clutter", "just the essentials" | **preset `minimal`**: `hide: ["thinking","effort","profile","extra","drift","session","sessions","activity"]` — warn: hiding `drift` silences release notices |
 | "what is Claude doing", "live activity", "hide the spinner" | show/hide `activity` (`▸ Bash 12s` from the transcript tail) |
-| "which session is this", "label my panes" | show/hide `session`; suggest `/rename` to give the session a real name |
+| "which session is this", "label my panes" | show `session` (hidden by default: write a `hide` list without it); suggest `/rename` for a short label |
+| "how many sessions am I running", "who's eating my window" | show `sessions` (the `⧉ N` chip, hidden by default) — or point at `/claudefuel.fleet` for the detail view |
 | "everything", "back to normal", "reset" | delete overrides — restore defaults (`{"version":1}` or remove the file) |
 | "no colors", "colorblind", "accessible", "grayscale" | `theme: "mono"` (structural alarms carry severity without hue) |
 | "countdown", "how long until reset" | `reset_display: "countdown"` |
@@ -42,7 +43,7 @@ Presets are expanded by *this skill* into concrete schema-v1 keys at write time 
 | "put the weekly bar first", "reorder" | `segments.order.columns` / `segments.order.line1` |
 | "hide X" / "show X" | `segments.hide` add/remove; if X is unrecognized, list valid tokens |
 | "focus mode", "deep work" | **preset `focus`**: minimal + `reset_display: "countdown"` |
-| "cockpit", "show me everything, tight" | **preset `cockpit`**: full segments (empty `hide`), thresholds 40/60/80 |
+| "cockpit", "show me everything, tight" | **preset `cockpit`**: full segments (`"hide": []` — this also lights the ◈/⧉ chips), thresholds 40/60/80 |
 
 ## Schema (version 1)
 
@@ -58,7 +59,7 @@ All keys optional; absent keys use the default. Write **sparse**: `"version": 1`
 | `hyperlinks` | `true` | OSC 8 clickable cells (reset → usage page, extra → billing, `↗` → releases, `#N` → the PR). Auto-gated to terminals that render them; `false` disables outright. |
 | `segments.order.line1` | `["model","session","ctx","thinking","effort","agent","activity","pr","drift"]` | Line 1 order. `session` = identity chip (`◈ name`), `agent` = subagent badge, `activity` = live tool call (`▸ Bash 12s`), `pr` = clickable `#N` chip with review-state glyph (`✓`/`◌`/`✗`/`◇`). |
 | `segments.order.columns` | `["5h","7d","extra"]` | Column order for Lines 2 **and** 3 (Line 3 mirrors Line 2). |
-| `segments.hide` | `[]` | Any order token above, plus hide-only `"profile"` (the `[name]` badge), `"cap_eta"` (the `~cap` range, ADR-0004), `"projection"` (the `→N%` landing prediction on the 5h cell), and `"sessions"` (the `⧉ N` shared-window session count). |
+| `segments.hide` | `["session","sessions"]` | Any order token above, plus hide-only `"profile"` (the `[name]` badge), `"cap_eta"` (the `~cap` range, ADR-0004), `"projection"` (the `→N%` landing prediction on the 5h cell), and `"sessions"` (the `⧉ N` shared-window session count). **The default is non-empty** — the ◈ session chip and ⧉ count are opt-in. A user-supplied `hide` REPLACES the default, which is also how to opt in: `"hide": []` shows both; when adding other tokens, decide explicitly whether to keep `"session"`/`"sessions"` in the list. |
 
 Unknown tokens/keys are ignored by the bar; `--validate-config` warns about them with a nearest-match suggestion.
 

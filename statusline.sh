@@ -230,7 +230,7 @@ claudefuel_config_report() {
         "segments": {
           "order": {"line1": ["model","session","ctx","thinking","effort","agent","activity","pr","drift"],
                     "columns": ["5h","7d","extra"]},
-          "hide": []
+          "hide": ["session","sessions"]
         }
       }'
     if [ ! -f "$path" ]; then
@@ -280,8 +280,8 @@ claudefuel_config_report() {
                 columns: ((($cfg.segments.order.columns)? // $d.segments.order.columns)
                         | if type == "array" then map(tostring) else $d.segments.order.columns end)
               },
-              hide: ((($cfg.segments.hide)? // [])
-                     | if type == "array" then map(tostring) else [] end)
+              hide: ((($cfg.segments.hide)? // $d.segments.hide)
+                     | if type == "array" then map(tostring) else $d.segments.hide end)
             }
           } as $eff
         | ([ ["theme"], ["color_thresholds","orange"], ["color_thresholds","yellow"],
@@ -698,7 +698,11 @@ cfg_glyphs="unicode"
 cfg_hyperlinks="true"
 cfg_line1_order="model session ctx thinking effort agent activity pr drift"
 cfg_columns_order="5h 7d extra"
-cfg_hide=""
+# session (the ◈ identity chip) and sessions (the ⧉ shared-window count)
+# are hidden by default — identity chrome is opt-in, not ambient. Note
+# that a user-supplied segments.hide REPLACES this default (sparse-merge
+# semantics), which is also how they opt back in: e.g. "hide": [].
+cfg_hide="session sessions"
 
 # CLAUDEFUEL_CONFIG=<path> overrides the config-file location (read-only,
 # same malformed-file-is-ignored semantics) — the preview seam behind the
@@ -719,7 +723,7 @@ if [ -f "$config_file" ]; then
             | (if . == true then "true" else "false" end) | @sh),
         "cfg_line1_order=" + toks((.segments.order.line1)?; ["model","session","ctx","thinking","effort","agent","activity","pr","drift"]),
         "cfg_columns_order=" + toks((.segments.order.columns)?; ["5h","7d","extra"]),
-        "cfg_hide=" + toks((.segments.hide)?; [])
+        "cfg_hide=" + toks((.segments.hide)?; ["session","sessions"])
     ' "$config_file" 2>/dev/null) && eval "$cfg_assignments"
 fi
 
