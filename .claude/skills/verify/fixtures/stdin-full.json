@@ -1,0 +1,15 @@
+{
+  "session_id": "verify",
+  "model": { "id": "claude-opus-5-5", "display_name": "Opus 5.5" },
+  "workspace": { "current_dir": "/tmp", "project_dir": "/tmp" },
+  "context_window": {
+    "context_window_size": 200000,
+    "current_usage": {
+      "input_tokens": 12000,
+      "cache_creation_input_tokens": 8000,
+      "cache_read_input_tokens": 30000
+    }
+  },
+  "thinking": { "enabled": true },
+  "effort": { "level": "high" }
+}

@@ -1,0 +1,4 @@
+{
+  "five_hour":   { "utilization": 60, "resets_at": "@now+10800" },
+  "seven_day":   { "utilization": 30, "resets_at": "@now+432000" }
+}

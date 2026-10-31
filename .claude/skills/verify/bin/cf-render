@@ -1,0 +1,298 @@
+#!/bin/bash
+# cf-render — render claudefuel's statusline.sh the way Claude Code does
+# (JSON payload on stdin, ANSI bar on stdout) inside a throwaway profile,
+# with the network fenced off, and file the evidence.
+#
+# Run with --help for options. Bash 3.2 compatible (stock macOS).
+
+set -u
+set -o pipefail
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="$(cd "$SKILL_DIR/../../.." && pwd)"
+
+usage() {
+    cat <<'EOF'
+Usage: cf-render [options]
+
+Payload and seeded state (JSON args accept inline JSON or @FILE):
+  --label NAME            evidence dir suffix (default: render)
+  --profile NAME          sandbox dir is .claude-NAME, so the bar shows [NAME] (default: verify)
+  --stdin JSON|@FILE      Claude Code status payload (default: fixtures/stdin-full.json)
+  --usage JSON|@FILE      seed the usage cache (shape of GET /api/oauth/usage).
+                          Any string "@now+SECS" / "@now-SECS" becomes an ISO-8601 UTC time.
+  --usage-age SECS        back-date the usage cache mtime (300+ = due for refresh, 900+ = stale warning)
+  --prepaid JSON|@FILE    seed the prepaid-credits cache (e.g. {"amount":4250,"currency":"EUR"})
+  --upstream VER          seed the drift cache with this upstream version
+                          (default: the script's own version, i.e. no drift)
+  --no-upstream           leave the drift cache absent (first-run state)
+  --attempt-age SECS      create the usage fetch-attempt marker, aged SECS
+  --retry-after-in SECS   create a 429 cooldown deadline at now+SECS
+
+Network:
+  (default)               no token is resolvable and every curl/security/secret-tool call
+                          is logged and fails; CLAUDEFUEL_OFFLINE=1
+  --api STATUS[:RETRY]    fake the usage API at the HTTP boundary: a dummy token is supplied,
+                          and the curl shim answers https://api.anthropic.com/api/oauth/usage
+                          with STATUS (and a retry-after header on 429)
+  --api-body JSON|@FILE   response body for --api (default: rate_limit_error body)
+  --allow-github          let the drift check really fetch raw.githubusercontent.com
+                          (unsets CLAUDEFUEL_OFFLINE; prepaid fetch stays fenced)
+
+Run control:
+  --repeat N              render N times in the same sandbox (backoff checks)
+  --tz ZONE               pin TZ for reset-time formatting (default: inherit)
+  --script PATH           statusline under test (default: <repo>/statusline.sh)
+  --out DIR               evidence root (default: <repo>/.verify-evidence)
+
+Prints the evidence directory on the last line of stdout. Exit 0 when every
+render exited 0; 1 otherwise; 2 on usage errors.
+EOF
+}
+
+die() { echo "cf-render: $*" >&2; exit 2; }
+
+read_json_arg() {
+    # @FILE → file contents; else the literal
+    case "$1" in
+        @*) cat "${1#@}" || die "cannot read ${1#@}" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+label=render profile=verify
+stdin_arg="@$SKILL_DIR/fixtures/stdin-full.json"
+usage_arg="" usage_age=0 prepaid_arg="" upstream="" no_upstream=false
+attempt_age="" retry_after_in="" api="" api_body="" allow_github=false
+repeat=1 tz="" script="$REPO/statusline.sh" out="${VERIFY_EVIDENCE_DIR:-$REPO/.verify-evidence}"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --label) label="$2"; shift 2 ;;
+        --profile) profile="$2"; shift 2 ;;
+        --stdin) stdin_arg="$2"; shift 2 ;;
+        --usage) usage_arg="$2"; shift 2 ;;
+        --usage-age) usage_age="$2"; shift 2 ;;
+        --prepaid) prepaid_arg="$2"; shift 2 ;;
+        --upstream) upstream="$2"; shift 2 ;;
+        --no-upstream) no_upstream=true; shift ;;
+        --attempt-age) attempt_age="$2"; shift 2 ;;
+        --retry-after-in) retry_after_in="$2"; shift 2 ;;
+        --api) api="$2"; shift 2 ;;
+        --api-body) api_body="$2"; shift 2 ;;
+        --allow-github) allow_github=true; shift ;;
+        --repeat) repeat="$2"; shift 2 ;;
+        --tz) tz="$2"; shift 2 ;;
+        --script) script="$2"; shift 2 ;;
+        --out) out="$2"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) die "unknown option: $1 (see --help)" ;;
+    esac
+done
+
+[ -f "$script" ] || die "no statusline at $script"
+command -v jq >/dev/null || die "jq not found"
+command -v shasum >/dev/null || die "shasum not found"
+case "$profile" in ''|*/*) die "--profile must be a plain name" ;; esac
+
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+age_file() {
+    local past=$(( $(date +%s) - $2 ))
+    touch -t "$(date -r "$past" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$past" +%Y%m%d%H%M.%S)" "$1"
+}
+
+# ---- Sandbox profile. A fresh mktemp path gives a fresh 8-hex hash, so every
+# /tmp/claude cache file the script touches is unique to this run. Never run
+# without CLAUDE_CONFIG_DIR: the unsuffixed /tmp/claude files belong to the
+# user's live default-profile bar.
+ts=$(date +%Y%m%d-%H%M%S)
+evidence="$out/$ts-$label"
+[ -e "$evidence" ] && evidence="$evidence-$$"
+mkdir -p "$evidence" || die "cannot create $evidence"
+
+for _ in 1 2 3 4 5; do
+    sandbox=$(mktemp -d "${TMPDIR%/}/cf-verify.XXXXXX")
+    config_dir="$sandbox/.claude-$profile"
+    hash=$(printf '%s' "$config_dir" | shasum -a 256 | cut -c1-8)
+    # Refuse a hash that already owns files (someone else's profile).
+    if ls /tmp/claude/statusline-*-"$hash"* >/dev/null 2>&1; then
+        rm -rf "$sandbox"; sandbox=""; continue
+    fi
+    break
+done
+[ -n "$sandbox" ] || die "could not find an unused cache hash"
+mkdir -p "$config_dir/cache" "$sandbox/bin" /tmp/claude
+printf '%s\t%s\t%s\n' "$hash" "$sandbox" "$evidence" >> "$out/.instances"
+
+cleanup_sandbox() {
+    # Kill nothing by name; remove exactly the files keyed by our hash.
+    rm -f /tmp/claude/statusline-*-"$hash".json /tmp/claude/statusline-*-"$hash" \
+          /tmp/claude/statusline-*-"$hash".[0-9]* 2>/dev/null
+    rm -rf /tmp/claude/statusline-*-"$hash".lock 2>/dev/null
+    rm -rf "$sandbox"
+    if [ -f "$out/.instances" ]; then
+        grep -v "^$hash	" "$out/.instances" > "$out/.instances.tmp" 2>/dev/null
+        mv "$out/.instances.tmp" "$out/.instances"
+    fi
+}
+trap cleanup_sandbox EXIT
+
+usage_cache="/tmp/claude/statusline-usage-cache-$hash.json"
+attempt_file="/tmp/claude/statusline-usage-attempt-$hash"
+retryafter_file="/tmp/claude/statusline-usage-retryafter-$hash"
+prepaid_cache="/tmp/claude/statusline-prepaid-cache-$hash.json"
+drift_cache="$config_dir/cache/claudefuel-version.json"
+
+installed_version=$(head -20 "$script" | grep -E '^# claudefuel:' | head -n1 | sed -E 's/^# claudefuel: v//')
+
+# ---- Seed state through the same files the script reads in production.
+read_json_arg "$stdin_arg" > "$evidence/stdin.json"
+# Empty stdin is a real Claude Code edge case (the script prints "Claude").
+if [ -s "$evidence/stdin.json" ]; then
+    jq -e . "$evidence/stdin.json" >/dev/null 2>&1 || die "--stdin is not valid JSON"
+fi
+
+now=$(date +%s)
+if [ -n "$usage_arg" ]; then
+    read_json_arg "$usage_arg" | jq --argjson now "$now" '
+        walk(if type == "string" and test("^@now[+-][0-9]+$")
+             then (.[5:] | tonumber) as $d
+                  | (if .[4:5] == "+" then $now + $d else $now - $d end) | todate
+             else . end)' > "$evidence/usage-seed.json" || die "--usage is not valid JSON"
+    cp "$evidence/usage-seed.json" "$usage_cache"
+    [ "$usage_age" -gt 0 ] && age_file "$usage_cache" "$usage_age"
+fi
+if [ -n "$prepaid_arg" ]; then
+    read_json_arg "$prepaid_arg" > "$evidence/prepaid-seed.json"
+    jq -e . "$evidence/prepaid-seed.json" >/dev/null 2>&1 || die "--prepaid is not valid JSON"
+    cp "$evidence/prepaid-seed.json" "$prepaid_cache"
+fi
+if ! $no_upstream; then
+    printf '{"upstream_version":"%s"}\n' "${upstream:-$installed_version}" > "$drift_cache"
+fi
+if [ -n "$attempt_age" ]; then
+    : > "$attempt_file"; age_file "$attempt_file" "$attempt_age"
+fi
+[ -n "$retry_after_in" ] && echo $(( now + retry_after_in )) > "$retryafter_file"
+
+# ---- Network fence: PATH shims that log every call (Authorization redacted).
+real_curl=$(command -v curl || true)
+cat > "$sandbox/bin/curl" <<'EOF'
+#!/bin/bash
+url="" dfile="" prev=""
+for a in "$@"; do
+  case "$a" in http*) url="$a" ;; esac
+  [ "$prev" = "-D" ] && dfile="$a"
+  prev="$a"
+done
+printf 'run=%s curl %s\n' "${CF_RUN:-?}" "$url" >> "$CF_NET_LOG"
+case "$url" in
+  https://api.anthropic.com/api/oauth/usage)
+    if [ -n "${CF_API_STATUS:-}" ]; then
+      [ -n "$dfile" ] && {
+        echo "HTTP/2 $CF_API_STATUS "
+        [ "$CF_API_STATUS" = "429" ] && [ -n "${CF_API_RETRY:-}" ] && echo "retry-after: $CF_API_RETRY"
+        echo ""
+      } > "$dfile"
+      cat "$CF_API_BODY"
+      exit 0
+    fi ;;
+  https://raw.githubusercontent.com/*)
+    [ -n "${CF_ALLOW_GITHUB:-}" ] && exec "$CF_REAL_CURL" "$@" ;;
+esac
+exit 7
+EOF
+for tool in security secret-tool; do
+    cat > "$sandbox/bin/$tool" <<EOF
+#!/bin/bash
+printf 'run=%s $tool %s\n' "\${CF_RUN:-?}" "\$*" >> "\$CF_NET_LOG"
+exit 44
+EOF
+done
+chmod +x "$sandbox/bin/"*
+: > "$evidence/net.log"
+
+api_status="" api_retry=""
+if [ -n "$api" ]; then
+    api_status="${api%%:*}"
+    [ "$api" != "$api_status" ] && api_retry="${api#*:}"
+    if [ -n "$api_body" ]; then read_json_arg "$api_body"; else printf '%s' '{"error":{"type":"rate_limit_error"}}'; fi \
+        > "$evidence/api-body.json"
+fi
+
+# ---- Manifest
+{
+    echo "script=$script"
+    echo "script_version=$installed_version"
+    echo "git_rev=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null)$(git -C "$REPO" diff --quiet -- statusline.sh 2>/dev/null || echo '+dirty')"
+    echo "profile=$profile"
+    echo "claude_config_dir=$config_dir"
+    echo "cache_hash=$hash"
+    echo "tz=${tz:-${TZ:-system}}"
+    echo "rendered_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) (epoch $now)"
+    echo "api=${api:-fenced}"
+    echo "allow_github=$allow_github"
+    echo "repeat=$repeat"
+} > "$evidence/manifest.txt"
+
+colorize() {
+    sed -E \
+        -e $'s/\x1b\\[38;2;0;153;255m/{blue}/g' \
+        -e $'s/\x1b\\[38;2;255;176;85m/{orange}/g' \
+        -e $'s/\x1b\\[38;2;0;160;0m/{green}/g' \
+        -e $'s/\x1b\\[38;2;46;149;153m/{cyan}/g' \
+        -e $'s/\x1b\\[38;2;255;85;85m/{red}/g' \
+        -e $'s/\x1b\\[38;2;230;200;0m/{yellow}/g' \
+        -e $'s/\x1b\\[38;2;220;220;220m/{white}/g' \
+        -e $'s/\x1b\\[2m/{dim}/g' \
+        -e $'s/\x1b\\[0m/{\\/}/g'
+}
+
+# ---- Render. env -i so no inherited token, CLAUDE_CONFIG_DIR, or proxy leaks in.
+run_env=(
+    PATH="$sandbox/bin:$(dirname "$(command -v jq)"):/usr/bin:/bin:/usr/sbin:/sbin"
+    HOME="$sandbox"
+    LANG="${LANG:-en_US.UTF-8}"
+    CLAUDE_CONFIG_DIR="$config_dir"
+    CF_NET_LOG="$evidence/net.log"
+    CF_REAL_CURL="$real_curl"
+    CF_API_STATUS="$api_status"
+    CF_API_RETRY="$api_retry"
+    CF_API_BODY="$evidence/api-body.json"
+)
+[ -n "$tz" ] && run_env+=(TZ="$tz")
+[ -z "$tz" ] && [ -n "${TZ:-}" ] && run_env+=(TZ="$TZ")
+if $allow_github; then run_env+=(CF_ALLOW_GITHUB=1); else run_env+=(CLAUDEFUEL_OFFLINE=1); fi
+[ -n "$api" ] && run_env+=(CLAUDE_CODE_OAUTH_TOKEN=cf-verify-dummy-token)
+
+overall=0
+i=1
+while [ "$i" -le "$repeat" ]; do
+    env -i "${run_env[@]}" CF_RUN="$i" \
+        "$script" < "$evidence/stdin.json" > "$evidence/run-$i.ansi" 2> "$evidence/run-$i.stderr"
+    rc=$?
+    echo "$rc" > "$evidence/run-$i.exit"
+    [ "$rc" -eq 0 ] || overall=1
+    sed -E $'s/\x1b\\[[0-9;]*m//g' "$evidence/run-$i.ansi" > "$evidence/run-$i.txt"
+    colorize < "$evidence/run-$i.ansi" > "$evidence/run-$i.colors.txt"
+    i=$(( i + 1 ))
+done
+
+# ---- Side effects: snapshot every file the script left for this profile.
+mkdir -p "$evidence/state-after"
+{
+    for f in /tmp/claude/statusline-*-"$hash"* "$drift_cache"; do
+        [ -e "$f" ] || continue
+        printf '%s\tage=%ss\n' "$f" "$(( $(date +%s) - $(mtime "$f") ))"
+        [ -f "$f" ] && cp "$f" "$evidence/state-after/$(basename "$f" | sed "s/-$hash//")"
+    done
+} > "$evidence/state-after/index.txt"
+
+for i in $(seq 1 "$repeat"); do
+    echo "--- run $i (exit $(cat "$evidence/run-$i.exit")) ---"
+    cat "$evidence/run-$i.txt"; echo
+done
+echo "--- fenced calls (curl/security/secret-tool): $(wc -l < "$evidence/net.log" | tr -d ' ') ---"
+cat "$evidence/net.log"
+echo "$evidence"
+exit "$overall"

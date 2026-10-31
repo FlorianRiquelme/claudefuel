@@ -1,0 +1,28 @@
+#!/bin/bash
+# cf-cleanup — remove sandboxes stranded by interrupted cf-render runs.
+# Usage: cf-cleanup [--purge-evidence]
+# Touches only cache files keyed by hashes cf-render recorded in
+# <evidence root>/.instances, plus their mktemp sandbox dirs. Never kills
+# processes, never touches unsuffixed /tmp/claude files (the user's live bar),
+# never deletes evidence unless --purge-evidence is given.
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="$(cd "$SKILL_DIR/../../.." && pwd)"
+out="${VERIFY_EVIDENCE_DIR:-$REPO/.verify-evidence}"
+reg="$out/.instances"
+n=0
+if [ -f "$reg" ]; then
+    while IFS="$(printf '\t')" read -r hash sandbox _evidence; do
+        case "$hash" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) continue ;; esac
+        rm -f /tmp/claude/statusline-*-"$hash".json /tmp/claude/statusline-*-"$hash" /tmp/claude/statusline-*-"$hash".[0-9]* 2>/dev/null
+        rm -rf /tmp/claude/statusline-*-"$hash".lock 2>/dev/null
+        case "$sandbox" in */cf-verify.*) rm -rf "$sandbox" ;; esac
+        echo "removed sandbox $hash ($sandbox)"
+        n=$((n + 1))
+    done < "$reg"
+    : > "$reg"
+fi
+echo "cleaned $n stranded sandbox(es); evidence kept in $out"
+if [ "${1:-}" = "--purge-evidence" ]; then
+    rm -rf "$out" && echo "purged $out"
+fi
