@@ -25,7 +25,7 @@ Or `/claudefuel.uninstall` from inside a Claude Code session.
 ## What you get
 
 - **Line 1:** model · `ctx` bar with `<used>/<total>` tokens · thinking on/off · effort level (when the model supports it). When a newer release is available, an `↗ /claudefuel.update` segment appears here as a one-glyph drift signal.
-- **Line 2:** `5h` / `7d` / `extra` usage progress bars (matches the `.five_hour` / `.seven_day` / `.extra_usage` fields the API returns)
+- **Line 2:** `5h` / `7d` / `extra` usage progress bars (matches the `.five_hour` / `.seven_day` / `.extra_usage` fields the API returns). Plans with only a weekly limit get `null` for `.five_hour`, so the `5h` bar and its reset are hidden.
 - **Line 3:** `↻` reset times for each window. When you're burning through the 5-hour window faster than reset-pace, a `~cap HH:MM-HH:MM` segment appears next to the 5h reset — a rough estimate of when you'll hit 100% at the current pace. Dormant when healthy; the tilde and range signal it's a prediction, not a precise time.
 - Cross-platform: macOS Keychain, Linux credentials file / GNOME Keyring
 - Color-coded: green → orange → yellow → red as you burn through limits

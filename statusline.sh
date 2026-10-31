@@ -490,7 +490,7 @@ if $needs_refresh && $should_attempt && claudefuel_try_lock "$usage_lock_dir" "$
             -H "User-Agent: claude-code/2.1.34" \
             "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
         http_status=$(awk 'toupper($1) ~ /^HTTP/ {print $2}' "$hdr_file" 2>/dev/null | tail -n1)
-        if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
+        if [ -n "$response" ] && echo "$response" | jq -e 'has("five_hour") or has("seven_day")' >/dev/null 2>&1; then
             usage_data="$response"
             echo "$response" > "$cache_file"
             cache_mtime=$now
@@ -762,33 +762,36 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     col1w=19
     col2w=19
 
-    # ---- 5-hour ----
-    five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
-    five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
-    five_hour_reset=$(format_reset_time "$five_hour_reset_iso" "time")
-    five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
+    # ---- 5-hour (null on plans with only a weekly limit) ----
+    has_five_hour=$(echo "$usage_data" | jq -r '.five_hour != null')
+    if [ "$has_five_hour" = "true" ]; then
+        five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
+        five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
+        five_hour_reset=$(format_reset_time "$five_hour_reset_iso" "time")
+        five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
 
-    # Calculate visible length: "5h: " + bar + " " + "XX%"
-    col1_bar_vis_len=$(( 4 + bar_width + 1 + ${#five_hour_pct} + 1 ))
-    col1_bar_raw="${white}5h:${reset} ${five_hour_bar} ${cyan}${five_hour_pct}%${reset}"
-    # col1_bar padding deferred — see col1w_actual computation below (cap-ETA may widen col1).
+        # Calculate visible length: "5h: " + bar + " " + "XX%"
+        col1_bar_vis_len=$(( 4 + bar_width + 1 + ${#five_hour_pct} + 1 ))
+        col1_bar_raw="${white}5h:${reset} ${five_hour_bar} ${cyan}${five_hour_pct}%${reset}"
+        # col1_bar padding deferred — see col1w_actual computation below (cap-ETA may widen col1).
 
-    col1_reset_plain="↻ ${five_hour_reset}"
-    col1_reset="${white}↻ ${five_hour_reset}${reset}"
+        col1_reset_plain="↻ ${five_hour_reset}"
+        col1_reset="${white}↻ ${five_hour_reset}${reset}"
 
-    # Cap-ETA: see ADR-0004. Append to the 5h reset cell when present.
-    five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
-    cap_eta_plain=$(claudefuel_cap_eta_segment "$five_hour_pct" "$five_hour_reset_epoch")
-    if [ -n "$cap_eta_plain" ]; then
-        col1_reset_plain+=" · ${cap_eta_plain}"
-        col1_reset+=" ${dim}· ${cap_eta_plain}${reset}"
+        # Cap-ETA: see ADR-0004. Append to the 5h reset cell when present.
+        five_hour_reset_epoch=$(iso_to_epoch "$five_hour_reset_iso")
+        cap_eta_plain=$(claudefuel_cap_eta_segment "$five_hour_pct" "$five_hour_reset_epoch")
+        if [ -n "$cap_eta_plain" ]; then
+            col1_reset_plain+=" · ${cap_eta_plain}"
+            col1_reset+=" ${dim}· ${cap_eta_plain}${reset}"
+        fi
+
+        # Widen col1 when cap-ETA grows the reset cell — keeps Line 2/3 pipes aligned.
+        col1w_actual=$col1w
+        [ "${#col1_reset_plain}" -gt "$col1w_actual" ] && col1w_actual="${#col1_reset_plain}"
+        col1_bar=$(pad_column "$col1_bar_raw" "$col1_bar_vis_len" "$col1w_actual")
+        col1_reset=$(pad_column "$col1_reset" "${#col1_reset_plain}" "$col1w_actual")
     fi
-
-    # Widen col1 when cap-ETA grows the reset cell — keeps Line 2/3 pipes aligned.
-    col1w_actual=$col1w
-    [ "${#col1_reset_plain}" -gt "$col1w_actual" ] && col1w_actual="${#col1_reset_plain}"
-    col1_bar=$(pad_column "$col1_bar_raw" "$col1_bar_vis_len" "$col1w_actual")
-    col1_reset=$(pad_column "$col1_reset" "${#col1_reset_plain}" "$col1w_actual")
 
     # ---- 7-day ----
     seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
@@ -823,7 +826,12 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     fi
 
     # Assemble line 2: bars row
-    line2="${col1_bar}${sep}${col2_bar}"
+    line2="${col2_bar}"
+    line3="${col2_reset}"
+    if [ "$has_five_hour" = "true" ]; then
+        line2="${col1_bar}${sep}${line2}"
+        line3="${col1_reset}${sep}${line3}"
+    fi
     [ -n "$col3_bar" ] && line2+="${sep}${col3_bar}"
     if $usage_stale; then
         next_update=$(format_clock_time "$usage_next_epoch")
@@ -835,7 +843,6 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     fi
 
     # Assemble line 3: resets row
-    line3="${col1_reset}${sep}${col2_reset}"
     [ -n "$col3_reset" ] && line3+="${sep}${col3_reset}"
 fi
 
