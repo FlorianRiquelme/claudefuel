@@ -62,7 +62,8 @@ if [ -n "$dfile" ]; then
     echo ""
   } > "$dfile"
 fi
-printf '%s' "${FAKE_BODY-{\"error\":{\"type\":\"rate_limit_error\"}}}"
+default_body='{"error":{"type":"rate_limit_error"}}'
+printf '%s' "${FAKE_BODY-$default_body}"
 EOF
   chmod +x "$FAKE_BIN/curl"
   PATH="$FAKE_BIN:$PATH"
@@ -246,4 +247,32 @@ age_file() {
 
   calls=$(wc -l < "$CURL_CALLS_FILE" | tr -d ' ')
   [ "$calls" -eq 2 ]
+}
+
+WEEKLY_ONLY_BODY='{"five_hour":null,"seven_day":{"utilization":2.0,"resets_at":"2099-01-01T00:00:00+00:00"},"extra_usage":{"is_enabled":false}}'
+
+@test "a weekly-only response (no 5h window) refreshes the cache" {
+  export FAKE_HTTP_STATUS=200 FAKE_BODY="$WEEKLY_ONLY_BODY"
+  seed_stale_usage_cache 1000
+
+  output=$(run_bar)
+  line2=$(printf '%s' "$output" | sed -n '2p')
+
+  [[ "$line2" == *"7d:"*"2%"* ]] || false
+  [[ "$line2" != *"87%"* ]] || false
+  [[ "$line2" != *"updates"* ]] || false
+  jq -e '.seven_day.utilization == 2' "$USAGE_CACHE" >/dev/null
+}
+
+@test "a weekly-only response hides the 5h column" {
+  export FAKE_HTTP_STATUS=200 FAKE_BODY="$WEEKLY_ONLY_BODY"
+  seed_stale_usage_cache 1000
+
+  output=$(run_bar)
+  line2=$(printf '%s' "$output" | sed -n '2p')
+  line3=$(printf '%s' "$output" | sed -n '3p')
+
+  [[ "$output" != *"5h:"* ]] || false
+  [[ "$line2" == "7d:"* ]] || false
+  [[ "$line3" == "↻ "* && "$line3" != *"|"* ]] || false
 }
