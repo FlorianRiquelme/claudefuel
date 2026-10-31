@@ -274,5 +274,5 @@ WEEKLY_ONLY_BODY='{"five_hour":null,"seven_day":{"utilization":2.0,"resets_at":"
 
   [[ "$output" != *"5h:"* ]] || false
   [[ "$line2" == "7d:"* ]] || false
-  [[ "$line3" == "↻ "[a-z]* ]] || false
+  [[ "$line3" == "↻ "* && "$line3" != *"|"* ]] || false
 }
