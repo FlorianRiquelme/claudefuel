@@ -1,0 +1,5 @@
+{
+  "five_hour":   { "utilization": 35, "resets_at": "@now+3600" },
+  "seven_day":   { "utilization": 62, "resets_at": "@now+345600" },
+  "extra_usage": { "is_enabled": true, "utilization": 7, "used_credits": 1200, "monthly_limit": 17000 }
+}

@@ -1,0 +1,44 @@
+#!/bin/bash
+# cf-doctor — read-only: is this checkout's statusline.sh worth driving?
+# Usage: cf-doctor [--script PATH]
+# Prints one PASS/FAIL/WARN line per check; exit 0 only when nothing FAILs.
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="$(cd "$SKILL_DIR/../../.." && pwd)"
+script="$REPO/statusline.sh"
+[ "${1:-}" = "--script" ] && script="$2"
+out="${VERIFY_EVIDENCE_DIR:-$REPO/.verify-evidence}"
+fail=0
+pass() { echo "PASS  $*"; }
+bad()  { echo "FAIL  $*"; fail=1; }
+warn() { echo "WARN  $*"; }
+
+[ -f "$script" ] && pass "script: $script" || bad "script missing: $script"
+[ -x "$script" ] && pass "script is executable (Claude Code execs it directly)" || bad "script not executable"
+ver=$(head -20 "$script" 2>/dev/null | grep -E '^# claudefuel: v[0-9]+\.[0-9]+\.[0-9]+$' | sed -E 's/^# claudefuel: v//')
+[ -n "$ver" ] && pass "version header: v$ver" || bad "no parseable '# claudefuel: vX.Y.Z' header in first 20 lines"
+bash -n "$script" 2>/dev/null && pass "bash -n syntax OK" || bad "bash -n syntax error"
+head -1 "$script" | grep -q '^#!/bin/bash' && pass "shebang #!/bin/bash ($(/bin/bash --version | head -1 | sed 's/ (.*//'))" || warn "unexpected shebang: $(head -1 "$script")"
+
+for dep in jq shasum curl; do
+    p=$(command -v "$dep") && pass "$dep: $p $( [ "$dep" = jq ] && jq --version)" || bad "$dep not on PATH"
+done
+if command -v shellcheck >/dev/null; then
+    shellcheck -S warning "$script" >/dev/null 2>&1 && pass "shellcheck -S warning clean (CI gate)" || warn "shellcheck -S warning reports issues (CI will fail): shellcheck -S warning $script"
+else
+    warn "shellcheck not installed; CI lint gate not checked"
+fi
+
+mkdir -p /tmp/claude 2>/dev/null; [ -w /tmp/claude ] && pass "/tmp/claude writable" || bad "/tmp/claude not writable"
+
+rev=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null)
+dirty=$(git -C "$REPO" status --porcelain -- statusline.sh 2>/dev/null)
+pass "git: $rev${dirty:+ (statusline.sh has uncommitted changes)}"
+
+if [ -s "$out/.instances" ]; then
+    warn "$(wc -l < "$out/.instances" | tr -d ' ') stranded sandbox(es) from crashed renders; run bin/cf-cleanup"
+else
+    pass "no stranded sandboxes"
+fi
+[ -n "${CLAUDE_CONFIG_DIR:-}" ] && warn "CLAUDE_CONFIG_DIR is set in this shell ($CLAUDE_CONFIG_DIR); cf-render ignores it (env -i), never run statusline.sh by hand with it"
+exit $fail
