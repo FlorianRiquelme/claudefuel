@@ -1,0 +1,17 @@
+# What bin/check expects on the current statusline.sh. One line per
+# (config, rule). "holds" rules guard against regressions; "violated"
+# rules are open findings (see ../SKILL.md, "Findings"). When a code change
+# flips a line, bin/check fails until you update this file on purpose.
+#
+# config      rule             result    finding
+concurrent    Mutex            violated  F2
+concurrent    Throttle         violated  F1
+concurrent    HonorsCooldown   violated  F1
+concurrent    LateThrottle     holds     -
+concurrent    LateCooldown     holds     -
+sequential    Throttle         holds     -
+sequential    HonorsCooldown   violated  F3
+sequential    LateThrottle     holds     -
+sequential    LateCooldown     holds     -
+deep          LateThrottle     holds     -
+deep          LateCooldown     violated  F4

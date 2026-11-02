@@ -1,0 +1,155 @@
+#!/bin/bash
+# Replay a finding's counterexample against the real statusline.sh.
+#
+#   bin/replay F1|F2|F3|all
+#
+# Each run uses a fresh CLAUDE_CONFIG_DIR (so a fresh cache hash under
+# /tmp/claude), a bogus token, and PATH shims: a fake curl that logs when
+# each usage request starts and ends, and mkdir/rm wrappers that can pause
+# right before touching the lock dir to force the interleaving the model
+# found. No request leaves the machine. Prints "reproduced" or
+# "NOT reproduced" per finding; exit 1 if any did not reproduce.
+set -u
+
+SKILL_DIR=$(cd "$(dirname "$0")/.." && pwd)
+REPO_ROOT=$(cd "$SKILL_DIR/../../.." && pwd)
+STATUSLINE="$REPO_ROOT/statusline.sh"
+STDIN='{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"},"session_id":"t"}'
+
+hires() { perl -MTime::HiRes=time -e 'printf "%.2f\n", time'; }
+
+setup() {
+    SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/uft-replay.XXXXXX")
+    export CLAUDE_CONFIG_DIR="$SANDBOX/.claude-replay"
+    mkdir -p "$CLAUDE_CONFIG_DIR/cache" "$SANDBOX/bin"
+    local version
+    version=$(sed -n 's/^# claudefuel: v//p' "$STATUSLINE" | head -n1)
+    printf '{"upstream_version":"%s"}\n' "$version" > "$CLAUDE_CONFIG_DIR/cache/claudefuel-version.json"
+    HASH=$(printf '%s' "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)
+    LOCK="/tmp/claude/statusline-usage-fetch-$HASH.lock"
+    ATTEMPT="/tmp/claude/statusline-usage-attempt-$HASH"
+    RETRY="/tmp/claude/statusline-usage-retryafter-$HASH"
+    CURL_LOG="$SANDBOX/curl.log"; : > "$CURL_LOG"
+
+    cat > "$SANDBOX/bin/curl" <<'EOF'
+#!/bin/bash
+# Fake usage API: log "<pid> start <t>" / "<pid> end <t>", answer 429.
+t() { perl -MTime::HiRes=time -e 'printf "%.2f\n", time'; }
+echo "$$ start $(t)" >> "$CURL_LOG"
+dfile=""; prev=""
+for a in "$@"; do [ "$prev" = "-D" ] && dfile="$a"; prev="$a"; done
+sleep "${FAKE_CURL_SLEEP:-0}"
+[ -n "$dfile" ] && printf 'HTTP/2 429 \r\nretry-after: %s\r\n\r\n' "${FAKE_RETRY_AFTER:-2378}" > "$dfile"
+echo "$$ end $(t)" >> "$CURL_LOG"
+printf '{"error":{"type":"rate_limit_error"}}'
+EOF
+    cat > "$SANDBOX/bin/mkdir" <<'EOF'
+#!/bin/bash
+case "${!#}" in *.lock) [ -n "${DELAY_LOCK:-}" ] && sleep "$DELAY_LOCK" ;; esac
+exec /bin/mkdir "$@"
+EOF
+    cat > "$SANDBOX/bin/rm" <<'EOF'
+#!/bin/bash
+case "${!#}" in *.lock) [ -n "${DELAY_RM:-}" ] && sleep "$DELAY_RM" ;; esac
+exec /bin/rm "$@"
+EOF
+    chmod +x "$SANDBOX/bin/"*
+    /bin/mkdir -p /tmp/claude
+}
+
+teardown() {
+    /bin/rm -rf "$SANDBOX" /tmp/claude/statusline-*-"$HASH"* 2>/dev/null
+}
+
+# Run statusline.sh once with the shims; extra VAR=value args go to env.
+render() {
+    printf '%s' "$STDIN" | env -i HOME="$SANDBOX" PATH="$SANDBOX/bin:/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin" \
+        CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" CLAUDE_CODE_OAUTH_TOKEN=bogus CLAUDEFUEL_OFFLINE=1 \
+        CURL_LOG="$CURL_LOG" "$@" bash "$STATUSLINE" >/dev/null 2>&1
+}
+
+age_path() { perl -e '$t = time - $ARGV[0]; utime $t, $t, $ARGV[1]' "$1" "$2"; }
+
+calls() { grep -c ' start ' "$CURL_LOG"; }
+
+report() {  # report <id> <ok 0|1> <text>
+    if [ "$2" = 0 ]; then echo "F$1 reproduced: $3"; else echo "F$1 NOT reproduced: $3"; FAILED=1; fi
+}
+
+# F1: run B passes the attempt and retry-after checks, then pauses before
+# mkdir. Run A starts later, takes the lock, gets a 429, writes the
+# cooldown, releases. B takes the free lock and calls the API again.
+replay_f1() {
+    setup
+    render DELAY_LOCK=2 &
+    local b=$!
+    sleep 0.5
+    render
+    local deadline_after_a
+    deadline_after_a=$(cat "$RETRY" 2>/dev/null)
+    wait "$b"
+    local n second_start a_end
+    n=$(calls)
+    a_end=$(awk '$2 == "end" {print $3; exit}' "$CURL_LOG")
+    second_start=$(awk '$2 == "start" {c++; if (c == 2) print $3}' "$CURL_LOG")
+    if [ "$n" = 2 ] && [ -n "$deadline_after_a" ]; then
+        report 1 0 "2 usage requests; the second started at $second_start, after the first got a 429 at $a_end and wrote cooldown deadline $deadline_after_a (now $(cat "$RETRY"))"
+    else
+        report 1 1 "$n usage request(s); curl log: $(tr '\n' ' ' < "$CURL_LOG")"
+    fi
+    teardown
+}
+
+# F2: a killed run left the lock dir (60 s old) and an attempt marker
+# older than cache_max_age. Runs B and C start together; both see the old
+# lock. B removes it and takes a new one; C removes B's lock and takes
+# another. Both are inside the lock at once.
+replay_f2() {
+    setup
+    /bin/mkdir "$LOCK"; age_path 60 "$LOCK"
+    touch "$ATTEMPT"; age_path 400 "$ATTEMPT"
+    render FAKE_CURL_SLEEP=2 &
+    local b=$!
+    render FAKE_CURL_SLEEP=2 DELAY_RM=1 &
+    local c=$!
+    wait "$b" "$c"
+    local overlap
+    overlap=$(awk '$2 == "start" {s[$1] = $3} $2 == "end" {e[$1] = $3}
+        END { n = 0; for (p in s) ids[++n] = p
+              if (n == 2 && s[ids[1]] < e[ids[2]] && s[ids[2]] < e[ids[1]]) print "yes" }' "$CURL_LOG")
+    if [ "$overlap" = yes ]; then
+        report 2 0 "2 usage requests in flight at once: $(tr '\n' ' ' < "$CURL_LOG")"
+    else
+        report 2 1 "curl log: $(tr '\n' ' ' < "$CURL_LOG")"
+    fi
+    teardown
+}
+
+# F3: one run whose request takes 3 s gets "429, retry-after: 10". The
+# server's cooldown ends 10 s after it answered; the deadline written to
+# the retry-after file is 10 s after the run started.
+replay_f3() {
+    setup
+    render FAKE_CURL_SLEEP=3 FAKE_RETRY_AFTER=10
+    local answered written server_end early
+    answered=$(awk '$2 == "end" {print int($3); exit}' "$CURL_LOG")
+    written=$(cat "$RETRY" 2>/dev/null)
+    server_end=$(( answered + 10 ))
+    early=$(( server_end - ${written:-0} ))
+    if [ -n "$written" ] && [ "$early" -ge 2 ]; then
+        report 3 0 "server answered at $answered (cooldown until $server_end); file says $written, ${early}s early"
+    else
+        report 3 1 "answered=$answered written=${written:-none}"
+    fi
+    teardown
+}
+
+FAILED=0
+case "${1:-all}" in
+    F1) replay_f1 ;;
+    F2) replay_f2 ;;
+    F3) replay_f3 ;;
+    all) replay_f1; replay_f2; replay_f3 ;;
+    *) echo "usage: bin/replay F1|F2|F3|all" >&2; exit 2 ;;
+esac
+exit $FAILED

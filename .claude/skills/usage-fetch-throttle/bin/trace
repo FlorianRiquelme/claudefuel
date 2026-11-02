@@ -1,0 +1,26 @@
+#!/bin/bash
+# Print a TLC counterexample as one line per step: the action, then only
+# the variables that step changed. Reads TLC output on stdin.
+awk '
+/^State [0-9]+:/ {
+    flush()
+    n = $2; sub(":", "", n)
+    act = $0; sub(/^State [0-9]+: </, "", act); sub(/ line .*/, "", act); sub(/>$/, "", act)
+    collecting = 1; delete cur; next
+}
+collecting && /^\/\\ / {
+    line = substr($0, 4); eq = index(line, " = ")
+    cur[substr(line, 1, eq - 1)] = substr(line, eq + 3); next
+}
+collecting && /^$/ { flush(); collecting = 0 }
+END { flush() }
+function flush(   k, out) {
+    if (n == "") return
+    out = ""
+    for (k in cur) if (!(k in prev) || prev[k] != cur[k]) out = out "  " k "=" cur[k]
+    if (n == 1) out = "  (no cache, attempt, retry-after, or lock file; every run idle)"
+    printf "%3s %-12s%s\n", n, act, out
+    delete prev; for (k in cur) prev[k] = cur[k]
+    n = ""
+}
+'
